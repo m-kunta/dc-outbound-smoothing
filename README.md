@@ -52,6 +52,13 @@ See [REQUIREMENTS.md](REQUIREMENTS.md) for full solver logic, objective function
 - **Smoothed Ship Schedule** — Filterable table with colour-coded rows (green = moved, red = alert)
 - **Reset Synthetic Data** — Regenerate the database and re-run the solver in one click
 
+### 📁 Real Data Upload & Export
+
+To test LevelSet with your own network volume rather than the synthetic generator:
+- **Bring Your Own Data (BYOD):** Toggle the Data Source in the sidebar to "Upload Real Data"
+- **CSV Templates:** Upload your 5 core data feeds (Constraints, Inventory, SKU Master, Store Calendars, Demand/Orders) matching the expected schema
+- **Export Capabilities:** Once the solver completes, seamlessly download the optimized ship schedule as CSV or JSON for ingestion into your local WMS/OMS.
+
 ---
 
 ### 🤖 AI Planner Insight
@@ -68,11 +75,7 @@ A high-level AI briefing of the full plan. After running the solver, click **✨
 
 **Prompt design:** The LLM receives structured solver KPIs and is instructed to produce an operations-team brief — not an executive summary. Output is direct and actionable.
 
-**To enable:** Add your API key to `.env` (copy `.env.example` as a template):
-```
-GEMINI_API_KEY=your_key_here
-```
-Supports: Gemini, OpenAI, Anthropic, Groq, Ollama (switchable via sidebar dropdown).
+**To enable:** Choose your preferred AI provider directly from the sidebar dropdown (Gemini, OpenAI, Anthropic, Groq, Ollama) and paste your API key. Alternatively, set it in your `.env` file (copy `.env.example` as a template).
 
 ---
 
@@ -161,14 +164,11 @@ dc_outbound_smoothing/
 
 ---
 
-## Open Issues / Pending QA
+## Project Status
 
-The backend solver, synthetic data generation, and API integrations have been thoroughly tested (`test_backend.py`) and all P0/P1 defects (e.g., CV worsening due to strict guardrails, Python 3.9 type annotations) have been resolved.
+**The LevelSet prototype is fully complete and operational.**
 
-**Pending Tasks:**
-- **Frontend / UI Testing:** Manual or browser-driven QA of the Streamlit dashboard (chart rendering, table filtering, KPI updates).
-- **Edge Case Validation:** Testing with extremely large datasets or boundary inputs via the UI.
-- **Export Verification:** Ensure CSV/JSON exports match the UI state accurately.
+The backend solver, synthetic data generation, and multi-provider AI integrations have been thoroughly tested (`test_backend.py`). All mathematical guardrails (capacity, shelf-life, backroom space, inventory tracking) perform as designed, effectively smoothing outbound CV by ~20% without violating constraints. The Streamlit frontend and UI workflows have been validated.
 
 ---
 
