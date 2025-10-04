@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import os
 
 from data_gen import generate
-from solver import solve, smooth, get_runtime_config
+from solver import solve, smooth, get_runtime_config, convert_units
 from data_loader import (
     validate,
     apply_defaults,
@@ -508,3 +508,26 @@ def test_dl_14_and_dl_16_export_helpers_return_expected_payloads():
     assert b"ORDER_ID,SMOOTHED_DATE,QTY_PALLETS" in csv_bytes
     assert b'"ORDER_ID":"O1"' in json_bytes or b'"ORDER_ID": "O1"' in json_bytes
     assert b'"cv_before": 0.5' in kpi_bytes
+
+
+def test_sv_05_osa_target_maintained():
+    result = solve(db_path=DB_PATH)
+    assert result["kpis"]["osa_pct"] >= 98.5
+
+
+def test_sv_08_unit_conversion():
+    demand = pd.DataFrame([
+        {"ORDER_ID": "O1", "SKU_ID": "SKU1", "QTY_CASES": 10},
+        {"ORDER_ID": "O2", "SKU_ID": "SKU1", "QTY_CASES": 12},
+        {"ORDER_ID": "O3", "SKU_ID": "SKU2", "QTY_CASES": 5},
+    ])
+    sku_master = pd.DataFrame([
+        {"SKU_ID": "SKU1", "UOM_CONV": 10, "SHELF_LIFE": 30, "CASE_CUBE": 1.5},
+        {"SKU_ID": "SKU2", "UOM_CONV": 2, "SHELF_LIFE": 30, "CASE_CUBE": 1.0},
+    ])
+    
+    result = convert_units(demand, sku_master)
+    
+    assert result.loc[result["ORDER_ID"] == "O1", "QTY_PALLETS"].iloc[0] == 1.0
+    assert result.loc[result["ORDER_ID"] == "O2", "QTY_PALLETS"].iloc[0] == 2.0  # ceil(12/10)
+    assert result.loc[result["ORDER_ID"] == "O3", "QTY_PALLETS"].iloc[0] == 3.0  # ceil(5/2)
