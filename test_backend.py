@@ -44,6 +44,32 @@ def test_dg_01_all_tables_generated():
     expected = {"sku_master", "store_master", "dc_capacity", "inventory", "demand"}
     assert expected.issubset(tables)
 
+def test_dg_02_seed_reproducibility(tmp_path):
+    db1 = str(tmp_path / "db1.db")
+    db2 = str(tmp_path / "db2.db")
+    
+    generate(seed=42, db_path=db1)
+    generate(seed=42, db_path=db2)
+    
+    with sqlite3.connect(db1) as conn1, sqlite3.connect(db2) as conn2:
+        df1 = pd.read_sql("SELECT * FROM demand ORDER BY ORDER_ID", conn1)
+        df2 = pd.read_sql("SELECT * FROM demand ORDER BY ORDER_ID", conn2)
+        
+    pd.testing.assert_frame_equal(df1, df2)
+
+def test_dg_03_demand_wave_pattern():
+    with sqlite3.connect(DB_PATH) as conn:
+        demand = pd.read_sql("SELECT NEED_DATE FROM demand", conn)
+        
+    demand['NEED_DATE'] = pd.to_datetime(demand['NEED_DATE'])
+    demand['weekday'] = demand['NEED_DATE'].dt.dayofweek
+    
+    # 0=Mon, 1=Tue, 2=Wed. The plan says ~60% of volume should be Mon-Wed.
+    wave_volume = demand['weekday'].isin([0, 1, 2]).sum()
+    total_volume = len(demand)
+    
+    assert wave_volume / total_volume >= 0.55, "Mon/Tue/Wed demand did not hit 55% threshold"
+
 def test_dg_04_hard_soft_ratio():
     with sqlite3.connect(DB_PATH) as conn:
         df = pd.read_sql("SELECT PRIORITY, COUNT(*) as count FROM demand GROUP BY PRIORITY", conn)
