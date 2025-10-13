@@ -557,3 +557,16 @@ def test_sv_08_unit_conversion():
     assert result.loc[result["ORDER_ID"] == "O1", "QTY_PALLETS"].iloc[0] == 1.0
     assert result.loc[result["ORDER_ID"] == "O2", "QTY_PALLETS"].iloc[0] == 2.0  # ceil(12/10)
     assert result.loc[result["ORDER_ID"] == "O3", "QTY_PALLETS"].iloc[0] == 3.0  # ceil(5/2)
+
+
+def test_ec_01_empty_demand_handled(tmp_path):
+    db_path = str(tmp_path / "empty_demand.db")
+    generate(seed=42, db_path=db_path)
+    
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM demand")
+        
+    result = solve(db_path=db_path)
+    
+    assert len(result["plan"]) == 0
+    assert result["kpis"]["n_moved"] == 0
