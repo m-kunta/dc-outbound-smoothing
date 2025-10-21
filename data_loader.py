@@ -13,6 +13,7 @@ Author: Mohith Kunta (https://github.com/m-kunta)
 from __future__ import annotations  # enables X | Y unions on Python 3.9
 
 import io
+import json
 import sqlite3
 
 import pandas as pd
@@ -175,5 +176,4 @@ def plan_to_json(plan: pd.DataFrame) -> bytes:
 
 def kpis_to_json(kpis: dict) -> bytes:
     """Return the KPI dict as formatted JSON bytes."""
-    import json
     return json.dumps(kpis, indent=2).encode("utf-8")
