@@ -32,6 +32,26 @@ PROVIDER_DEFAULTS: dict[str, dict] = {
 # PUBLIC API — call this from app.py
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Sentinel prefix — app.py checks for this to distinguish auth failures from real responses
+AUTH_ERROR_PREFIX = "__AUTH_ERROR__"
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Return True if the exception looks like a revoked / invalid API key."""
+    auth_signals = (
+        "api key not found",
+        "api_key_invalid",
+        "invalid api key",
+        "incorrect api key",
+        "authentication",
+        "unauthorized",
+        "permission_denied",
+        "invalid_argument",   # Gemini 400 INVALID_ARGUMENT on bad key
+    )
+    msg = str(exc).lower()
+    return any(signal in msg for signal in auth_signals) or "401" in msg or "403" in msg
+
+
 def get_llm_response(prompt: str, provider: str, model: str) -> str:
     """
     Route a text prompt to the selected LLM provider and return the response.
@@ -43,6 +63,8 @@ def get_llm_response(prompt: str, provider: str, model: str) -> str:
 
     Returns:
         The LLM response as a plain string, or a user-friendly error message.
+        Auth failures return a string starting with AUTH_ERROR_PREFIX so the
+        caller can surface a targeted "check your key" message.
     """
     dispatch = {
         "Gemini":    _call_gemini,
@@ -75,6 +97,8 @@ def _call_gemini(prompt: str, model: str) -> str:
     except ImportError:
         return "❌ `google-genai` not installed. Run: pip install google-genai"
     except Exception as e:
+        if _is_auth_error(e):
+            return f"{AUTH_ERROR_PREFIX}Your Gemini API key appears to be invalid or revoked. Please update it in the sidebar or your .env file."
         return f"🚨 Gemini error: {e}"
 
 
@@ -92,6 +116,8 @@ def _call_openai(prompt: str, model: str) -> str:
     except ImportError:
         return "❌ `openai` not installed. Run: pip install openai"
     except Exception as e:
+        if _is_auth_error(e):
+            return f"{AUTH_ERROR_PREFIX}Your OpenAI API key appears to be invalid or revoked. Please update it in the sidebar or your .env file."
         return f"🚨 OpenAI error: {e}"
 
 
@@ -109,6 +135,8 @@ def _call_anthropic(prompt: str, model: str) -> str:
     except ImportError:
         return "❌ `anthropic` not installed. Run: pip install anthropic"
     except Exception as e:
+        if _is_auth_error(e):
+            return f"{AUTH_ERROR_PREFIX}Your Anthropic API key appears to be invalid or revoked. Please update it in the sidebar or your .env file."
         return f"🚨 Anthropic error: {e}"
 
 
@@ -126,6 +154,8 @@ def _call_groq(prompt: str, model: str) -> str:
     except ImportError:
         return "❌ `groq` not installed. Run: pip install groq"
     except Exception as e:
+        if _is_auth_error(e):
+            return f"{AUTH_ERROR_PREFIX}Your Groq API key appears to be invalid or revoked. Please update it in the sidebar or your .env file."
         return f"🚨 Groq error: {e}"
 
 

@@ -5,8 +5,18 @@ from datetime import date, timedelta
 import os
 
 from data_gen import generate
-from solver import solve
-from data_loader import validate, apply_defaults
+from solver import solve, smooth, get_runtime_config
+from data_loader import (
+    validate,
+    apply_defaults,
+    normalise_columns,
+    load_csv,
+    write_to_db,
+    get_sample_csv,
+    plan_to_csv,
+    plan_to_json,
+    kpis_to_json,
+)
 
 DB_PATH = "test_levelset.db"
 
@@ -100,3 +110,401 @@ def test_dl_04_optional_columns_defaulted():
     
     assert "PRIORITY" in df.columns
     assert df["PRIORITY"].iloc[0] == "SOFT"
+
+
+def _future_date(days_out):
+    return (date.today() + timedelta(days=days_out)).isoformat()
+
+
+def _make_order(*, need_date, qty_pallets, qty_cases, resource="Bulk", priority="SOFT",
+                sku_id="SKU1", dest_loc="STORE1", shelf_life=30):
+    return {
+        "ORDER_ID": f"{priority}_{need_date}_{qty_cases}",
+        "SKU_ID": sku_id,
+        "DEST_LOC": dest_loc,
+        "NEED_DATE": need_date,
+        "PRIORITY": priority,
+        "QTY_CASES": qty_cases,
+        "QTY_PALLETS": qty_pallets,
+        "RESOURCE_TYPE": resource,
+        "SHELF_LIFE": shelf_life,
+    }
+
+
+def test_sv_11_inventory_on_hand_allows_move_before_asn():
+    need_date = _future_date(10)
+    candidate = _future_date(8)
+    soft_orders = pd.DataFrame([
+        _make_order(need_date=need_date, qty_pallets=2, qty_cases=20, sku_id="SKU1"),
+        _make_order(need_date=need_date, qty_pallets=4, qty_cases=40, sku_id="SKU2"),
+    ])
+    hard_orders = pd.DataFrame(columns=soft_orders.columns)
+    dc_cap_lookup = {
+        (need_date, "Bulk"): 3,
+        (candidate, "Bulk"): 10,
+    }
+
+    result = smooth(
+        soft_orders,
+        hard_orders,
+        dc_cap_lookup,
+        {"SKU1": _future_date(20)},
+        {"SKU1": 100},
+        {"STORE1": "Mon,Tue,Wed,Thu,Fri,Sat,Sun"},
+        {"STORE1": 999},
+        [candidate, need_date],
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=5),
+        avg_by_resource={"Bulk": 1.0},
+    )
+
+    moved_row = result[result["SKU_ID"] == "SKU1"].iloc[0]
+    assert moved_row["SMOOTHED_DATE"] == candidate
+    assert moved_row["SHIFT_DAYS"] == 2
+
+
+def test_sv_capacity_checks_include_hard_load_on_candidate_day():
+    need_date = _future_date(10)
+    candidate = _future_date(8)
+    soft_orders = pd.DataFrame([
+        _make_order(need_date=need_date, qty_pallets=3, qty_cases=30, sku_id="SKU1")
+    ])
+    hard_orders = pd.DataFrame([
+        _make_order(need_date=candidate, qty_pallets=8, qty_cases=80, priority="HARD", sku_id="SKU9")
+    ])
+    dc_cap_lookup = {
+        (need_date, "Bulk"): 2,
+        (candidate, "Bulk"): 10,
+    }
+
+    result = smooth(
+        soft_orders,
+        hard_orders,
+        dc_cap_lookup,
+        {"SKU1": _future_date(1)},
+        {"SKU1": 0},
+        {"STORE1": "Mon,Tue,Wed,Thu,Fri,Sat,Sun"},
+        {"STORE1": 999},
+        [candidate, need_date],
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=5),
+        avg_by_resource={"Bulk": 1.0},
+    )
+
+    assert result.iloc[0]["SMOOTHED_DATE"] == need_date
+    assert result.iloc[0]["MOVE_REASON"].startswith("⚠️")
+
+
+def test_sv_22_horizon_parameter_changes_candidate_search():
+    need_date = _future_date(10)
+    near_1 = _future_date(9)
+    near_2 = _future_date(8)
+    far_valid = _future_date(7)
+    soft_orders = pd.DataFrame([
+        _make_order(need_date=need_date, qty_pallets=2, qty_cases=20, sku_id="SKU1"),
+        _make_order(need_date=need_date, qty_pallets=4, qty_cases=40, sku_id="SKU2"),
+    ])
+    hard_orders = pd.DataFrame(columns=soft_orders.columns)
+    dc_cap_lookup = {
+        (need_date, "Bulk"): 3,
+        (near_1, "Bulk"): 1,
+        (near_2, "Bulk"): 1,
+        (far_valid, "Bulk"): 10,
+    }
+
+    short_horizon = smooth(
+        soft_orders,
+        hard_orders,
+        dc_cap_lookup,
+        {"SKU1": _future_date(1)},
+        {"SKU1": 0},
+        {"STORE1": "Mon,Tue,Wed,Thu,Fri,Sat,Sun"},
+        {"STORE1": 999},
+        [far_valid, near_2, near_1, need_date],
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=2),
+        avg_by_resource={"Bulk": 1.0},
+    )
+    long_horizon = smooth(
+        soft_orders,
+        hard_orders,
+        dc_cap_lookup,
+        {"SKU1": _future_date(1)},
+        {"SKU1": 0},
+        {"STORE1": "Mon,Tue,Wed,Thu,Fri,Sat,Sun"},
+        {"STORE1": 999},
+        [far_valid, near_2, near_1, need_date],
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=3),
+        avg_by_resource={"Bulk": 1.0},
+    )
+
+    assert short_horizon[short_horizon["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == need_date
+    assert long_horizon[long_horizon["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == far_valid
+
+
+def test_sv_24_lambda_penalizes_moves_into_hard_heavy_days():
+    need_date = _future_date(10)
+    candidate = _future_date(9)
+    soft_orders = pd.DataFrame([
+        _make_order(need_date=need_date, qty_pallets=2, qty_cases=20, sku_id="SKU1"),
+        _make_order(need_date=need_date, qty_pallets=8, qty_cases=80, sku_id="SKU2"),
+    ])
+    hard_orders = pd.DataFrame([
+        _make_order(need_date=candidate, qty_pallets=5, qty_cases=50, priority="HARD", sku_id="SKU9")
+    ])
+    dc_cap_lookup = {
+        (need_date, "Bulk"): 2,
+        (candidate, "Bulk"): 20,
+    }
+    shared_args = (
+        soft_orders,
+        hard_orders,
+        dc_cap_lookup,
+        {"SKU1": _future_date(1)},
+        {"SKU1": 0},
+        {"STORE1": "Mon,Tue,Wed,Thu,Fri,Sat,Sun"},
+        {"STORE1": 999},
+        [candidate, need_date],
+    )
+
+    low_lambda = smooth(
+        *shared_args,
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=5),
+        avg_by_resource={"Bulk": 1.0},
+    )
+    high_lambda = smooth(
+        *shared_args,
+        config=get_runtime_config(lambda_val=2000, gamma_val=0, frozen_hours=24, horizon_days=5),
+        avg_by_resource={"Bulk": 1.0},
+    )
+
+    assert low_lambda[low_lambda["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == candidate
+    assert high_lambda[high_lambda["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == need_date
+
+
+def test_sv_25_gamma_penalizes_large_pull_forwards():
+    need_date = _future_date(10)
+    far_candidate = _future_date(7)
+    soft_orders = pd.DataFrame([
+        _make_order(need_date=need_date, qty_pallets=2, qty_cases=20, sku_id="SKU1"),
+        _make_order(need_date=need_date, qty_pallets=4, qty_cases=40, sku_id="SKU2"),
+    ])
+    hard_orders = pd.DataFrame(columns=soft_orders.columns)
+    dc_cap_lookup = {
+        (need_date, "Bulk"): 2,
+        (far_candidate, "Bulk"): 10,
+    }
+    shared_args = (
+        soft_orders,
+        hard_orders,
+        dc_cap_lookup,
+        {"SKU1": _future_date(1)},
+        {"SKU1": 0},
+        {"STORE1": "Mon,Tue,Wed,Thu,Fri,Sat,Sun"},
+        {"STORE1": 999},
+        [far_candidate, need_date],
+    )
+
+    low_gamma = smooth(
+        *shared_args,
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=5),
+        avg_by_resource={"Bulk": 1.0},
+    )
+    high_gamma = smooth(
+        *shared_args,
+        config=get_runtime_config(lambda_val=0, gamma_val=5, frozen_hours=24, horizon_days=5),
+        avg_by_resource={"Bulk": 1.0},
+    )
+
+    assert low_gamma[low_gamma["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == far_candidate
+    assert high_gamma[high_gamma["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == need_date
+
+
+def test_sv_03_soft_orders_pulled_forward_only():
+    result = solve(db_path=DB_PATH)
+    soft_orders = result["plan"][result["plan"]["PRIORITY"] == "SOFT"]
+
+    assert (soft_orders["SMOOTHED_DATE"] <= soft_orders["NEED_DATE"]).all()
+
+
+def test_sv_12_store_calendar_blocks_invalid_delivery_day():
+    need_date = _future_date(10)
+    candidate = _future_date(8)
+    soft_orders = pd.DataFrame([
+        _make_order(need_date=need_date, qty_pallets=2, qty_cases=20, sku_id="SKU1"),
+        _make_order(need_date=need_date, qty_pallets=4, qty_cases=40, sku_id="SKU2"),
+    ])
+    hard_orders = pd.DataFrame(columns=soft_orders.columns)
+
+    result = smooth(
+        soft_orders,
+        hard_orders,
+        {(need_date, "Bulk"): 3, (candidate, "Bulk"): 10},
+        {"SKU1": _future_date(1)},
+        {"SKU1": 0},
+        {"STORE1": "Mon"},
+        {"STORE1": 999},
+        [candidate, need_date],
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=5),
+        avg_by_resource={"Bulk": 1.0},
+    )
+
+    assert result[result["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == need_date
+
+
+def test_sv_13_backroom_capacity_blocks_move():
+    need_date = _future_date(10)
+    candidate = _future_date(8)
+    soft_orders = pd.DataFrame([
+        _make_order(need_date=need_date, qty_pallets=3, qty_cases=30, sku_id="SKU1"),
+        _make_order(need_date=candidate, qty_pallets=8, qty_cases=80, sku_id="SKU9"),
+        _make_order(need_date=need_date, qty_pallets=6, qty_cases=60, sku_id="SKU2"),
+    ])
+    hard_orders = pd.DataFrame(columns=soft_orders.columns)
+
+    result = smooth(
+        soft_orders,
+        hard_orders,
+        {(need_date, "Bulk"): 8, (candidate, "Bulk"): 20},
+        {"SKU1": _future_date(1)},
+        {"SKU1": 0},
+        {"STORE1": "Mon,Tue,Wed,Thu,Fri,Sat,Sun"},
+        {"STORE1": 10},
+        [candidate, need_date],
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=5),
+        avg_by_resource={"Bulk": 1.0},
+    )
+
+    assert result[result["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == need_date
+
+
+def test_sv_14_shelf_life_blocks_excessive_pull_forward():
+    need_date = _future_date(10)
+    candidate = _future_date(5)
+    soft_orders = pd.DataFrame([
+        _make_order(need_date=need_date, qty_pallets=2, qty_cases=20, sku_id="SKU1", shelf_life=8),
+        _make_order(need_date=need_date, qty_pallets=6, qty_cases=60, sku_id="SKU2"),
+    ])
+    hard_orders = pd.DataFrame(columns=soft_orders.columns)
+
+    result = smooth(
+        soft_orders,
+        hard_orders,
+        {(need_date, "Bulk"): 4, (candidate, "Bulk"): 20},
+        {"SKU1": _future_date(1)},
+        {"SKU1": 0},
+        {"STORE1": "Mon,Tue,Wed,Thu,Fri,Sat,Sun"},
+        {"STORE1": 999},
+        [candidate, need_date],
+        config=get_runtime_config(lambda_val=0, gamma_val=0, frozen_hours=24, horizon_days=7),
+        avg_by_resource={"Bulk": 1.0},
+    )
+
+    assert result[result["SKU_ID"] == "SKU1"].iloc[0]["SMOOTHED_DATE"] == need_date
+
+
+def test_sv_17_alert_count_matches_plan_rows():
+    result = solve(db_path=DB_PATH)
+    plan = result["plan"]
+    kpis = result["kpis"]
+
+    alert_rows = plan[
+        (plan["PRIORITY"] == "SOFT") &
+        (plan["MOVE_REASON"].str.startswith("⚠️", na=False))
+    ]
+    assert kpis["n_alerts"] == len(alert_rows)
+
+
+def test_sv_20_shifted_count_matches_plan_rows():
+    result = solve(db_path=DB_PATH)
+    plan = result["plan"]
+    kpis = result["kpis"]
+
+    shifted_rows = plan[
+        (plan["PRIORITY"] == "SOFT") &
+        (plan["SHIFT_DAYS"] > 0)
+    ]
+    assert kpis["n_moved"] == len(shifted_rows)
+
+
+def test_sv_07_plan_written_to_sqlite():
+    result = solve(db_path=DB_PATH)
+    plan = result["plan"]
+
+    with sqlite3.connect(DB_PATH) as conn:
+        smoothed = pd.read_sql("SELECT * FROM smoothed_plan", conn)
+
+    assert len(smoothed) == len(plan)
+    assert {"ORDER_ID", "SMOOTHED_DATE", "MOVE_REASON"}.issubset(smoothed.columns)
+
+
+def test_dl_01_valid_csv_accepted():
+    csv_bytes = (
+        "order_id,sku_id,dest_loc,need_date,qty_cases,resource_type\n"
+        "ORD1,SKU1,STORE1,2026-03-05,12,Bulk\n"
+    ).encode("utf-8")
+    df, errors = load_csv("demand", csv_bytes)
+
+    assert errors == []
+    assert df is not None
+    assert list(df.columns) == ["ORDER_ID", "SKU_ID", "DEST_LOC", "NEED_DATE", "QTY_CASES", "RESOURCE_TYPE", "PRIORITY"]
+    assert df.iloc[0]["PRIORITY"] == "SOFT"
+
+
+def test_dl_03_invalid_date_format_rejected():
+    df = pd.DataFrame({
+        "ORDER_ID": ["O1"],
+        "SKU_ID": ["S1"],
+        "DEST_LOC": ["L1"],
+        "NEED_DATE": ["03/05/2026"],
+        "QTY_CASES": [10],
+        "RESOURCE_TYPE": ["Bulk"],
+    })
+    errors = validate("demand", df)
+
+    assert any("YYYY-MM-DD" in e for e in errors)
+
+
+def test_dl_06_column_name_normalisation():
+    df = pd.DataFrame(columns=[" sku_id ", " need_date ", "qty_cases"])
+    normalised = normalise_columns(df)
+
+    assert list(normalised.columns) == ["SKU_ID", "NEED_DATE", "QTY_CASES"]
+
+
+def test_dl_10_template_has_expected_columns():
+    csv_text = get_sample_csv("store_master")
+    df = pd.read_csv(pd.io.common.StringIO(csv_text))
+
+    assert set(df.columns) == {"STORE_ID", "DELIVERY_CALENDAR", "BACKROOM_CAP"}
+    assert len(df) == 1
+
+
+def test_dl_12_write_to_db_replaces_existing_tables(tmp_path):
+    db_path = tmp_path / "loader_test.db"
+    first_tables = {
+        "demand": pd.DataFrame([{"ORDER_ID": "A1"}]),
+    }
+    second_tables = {
+        "demand": pd.DataFrame([{"ORDER_ID": "B1"}, {"ORDER_ID": "B2"}]),
+    }
+
+    write_to_db(first_tables, db_path=str(db_path))
+    write_to_db(second_tables, db_path=str(db_path))
+
+    with sqlite3.connect(db_path) as conn:
+        rows = pd.read_sql("SELECT * FROM demand", conn)
+
+    assert list(rows["ORDER_ID"]) == ["B1", "B2"]
+
+
+def test_dl_14_and_dl_16_export_helpers_return_expected_payloads():
+    plan = pd.DataFrame([
+        {"ORDER_ID": "O1", "SMOOTHED_DATE": "2026-03-05", "QTY_PALLETS": 3}
+    ])
+    kpis = {"cv_before": 0.5, "cv_after": 0.3}
+
+    csv_bytes = plan_to_csv(plan)
+    json_bytes = plan_to_json(plan)
+    kpi_bytes = kpis_to_json(kpis)
+
+    assert b"ORDER_ID,SMOOTHED_DATE,QTY_PALLETS" in csv_bytes
+    assert b'"ORDER_ID":"O1"' in json_bytes or b'"ORDER_ID": "O1"' in json_bytes
+    assert b'"cv_before": 0.5' in kpi_bytes

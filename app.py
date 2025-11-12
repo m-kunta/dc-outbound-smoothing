@@ -31,10 +31,11 @@ st.set_page_config(
 
 # ── LLM Provider Setup ────────────────────────────────────────────────────────
 try:
-    from llm_providers import get_llm_response, PROVIDER_DEFAULTS
+    from llm_providers import get_llm_response, PROVIDER_DEFAULTS, AUTH_ERROR_PREFIX
     AI_AVAILABLE = True
 except ImportError:
     AI_AVAILABLE = False
+    AUTH_ERROR_PREFIX = "__AUTH_ERROR__"
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("📦 LevelSet — DC Outbound Smoothing")
@@ -161,9 +162,9 @@ if AI_AVAILABLE:
         if entered_key:
             st.session_state[ss_key] = entered_key
             os.environ[key_env] = entered_key   # inject so llm_providers picks it up
-            st.sidebar.success(f"✅ {selected_provider} key active")
+            st.sidebar.info(f"🔑 {selected_provider} key entered — validity confirmed on first use")
         elif os.getenv(key_env):
-            st.sidebar.success(f"✅ `{key_env}` loaded from `.env`")
+            st.sidebar.info(f"🔑 `{key_env}` loaded from `.env` — validity confirmed on first use")
         else:
             st.sidebar.warning(f"⚠️ Enter a {selected_provider} API key above to enable AI features")
     else:
@@ -231,7 +232,13 @@ if data_mode == "Upload Real Data":
         if st.sidebar.button("🚀 Load Real Data & Solve", type="primary", use_container_width=True):
             with st.spinner("Writing data to database and running solver..."):
                 write_to_db(uploaded)
-                result = solve(DB_PATH)
+                result = solve(
+                    DB_PATH,
+                    horizon_days=horizon,
+                    frozen_hours=frozen_hours,
+                    lambda_val=lambda_val,
+                    gamma_val=gamma_val,
+                )
             st.session_state["result"] = result
             st.session_state["data_mode"] = "real"
             st.success("✅ Real data loaded and solver complete!")
@@ -240,7 +247,13 @@ if data_mode == "Upload Real Data":
 # ── Run Solver ────────────────────────────────────────────────────────────────
 if st.sidebar.button("▶️ Run Smoothing Solver", type="primary", use_container_width=True):
     with st.spinner("Running LevelSet solver..."):
-        result = solve(DB_PATH)
+        result = solve(
+            DB_PATH,
+            horizon_days=horizon,
+            frozen_hours=frozen_hours,
+            lambda_val=lambda_val,
+            gamma_val=gamma_val,
+        )
     st.session_state["result"] = result
     st.success("✅ Solver complete!")
 
@@ -270,7 +283,13 @@ st.sidebar.markdown(
 # Load previous result or run on first load
 if "result" not in st.session_state:
     with st.spinner("Running LevelSet solver..."):
-        st.session_state["result"] = solve(DB_PATH)
+        st.session_state["result"] = solve(
+            DB_PATH,
+            horizon_days=horizon,
+            frozen_hours=frozen_hours,
+            lambda_val=lambda_val,
+            gamma_val=gamma_val,
+        )
 
 result = st.session_state["result"]
 plan   = result["plan"]
@@ -429,7 +448,13 @@ Be direct and practical — avoid generic advice."""
 
         with st.spinner(f"Generating insight via {selected_provider}..."):
             insight = get_llm_response(prompt, selected_provider, selected_model)
-        st.info(f"**Planner Insight** *(via {selected_provider}/{selected_model})*\n\n{insight}")
+        if insight.startswith(AUTH_ERROR_PREFIX):
+            st.warning(
+                f"🔑 **API Key Invalid or Revoked** — {insight.removeprefix(AUTH_ERROR_PREFIX)}\n\n"
+                "Update your key in the sidebar or `.env` file, then try again."
+            )
+        else:
+            st.info(f"**Planner Insight** *(via {selected_provider}/{selected_model})*\n\n{insight}")
 
 st.markdown("---")
 
@@ -586,8 +611,14 @@ Keep it under 250 words. Be direct — this is for an operations team, not an ex
 
             with st.spinner(f"Triaging exceptions via {selected_provider}..."):
                 triage = get_llm_response(triage_prompt, selected_provider, selected_model)
-            st.success("**🔍 AI Exception Triage Brief**")
-            st.markdown(triage)
+            if triage.startswith(AUTH_ERROR_PREFIX):
+                st.warning(
+                    f"🔑 **API Key Invalid or Revoked** — {triage.removeprefix(AUTH_ERROR_PREFIX)}\n\n"
+                    "Update your key in the sidebar or `.env` file, then try again."
+                )
+            else:
+                st.success("**🔍 AI Exception Triage Brief**")
+                st.markdown(triage)
 
 else:
     st.success("✅ No exceptions flagged — the plan is clean. All SOFT orders were successfully smoothed and all HARD orders are protected.")

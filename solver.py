@@ -27,18 +27,36 @@ load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 DB_PATH = os.getenv("DB_PATH", "levelset.db")
-LAMBDA  = float(os.getenv("LAMBDA", 100))   # OSA penalty weight
-GAMMA   = float(os.getenv("GAMMA", 1))      # Early ship penalty weight
-FROZEN_HOURS   = int(os.getenv("FROZEN_HOURS", 48))
-HORIZON_DAYS   = int(os.getenv("HORIZON_DAYS", 10))
-# Smoothing sensitivity: trigger = days whose load > avg * PEAK_RATIO
-# Move guardrail: only move to days where resulting load < source load * TROUGH_RATIO
-SMOOTH_PEAK_RATIO   = float(os.getenv("SMOOTH_PEAK_RATIO", 1.05))   # flag day as peak if >105% avg
-SMOOTH_TROUGH_RATIO = float(os.getenv("SMOOTH_TROUGH_RATIO", 0.90)) # accept trough if load < 90% source
 DEFAULT_DELIVERY_CALENDAR = "Mon,Tue,Wed,Thu,Fri"
 DEFAULT_BACKROOM_CAP = 999
-TODAY = date.today()
-FROZEN_DATE = TODAY + timedelta(hours=FROZEN_HOURS)
+
+
+def get_runtime_config(
+    *,
+    lambda_val: float | None = None,
+    gamma_val: float | None = None,
+    frozen_hours: int | None = None,
+    horizon_days: int | None = None,
+) -> dict[str, float | int | date]:
+    """Read solver settings at call time so UI/env changes take effect immediately."""
+    resolved_lambda = float(lambda_val if lambda_val is not None else os.getenv("LAMBDA", 100))
+    resolved_gamma = float(gamma_val if gamma_val is not None else os.getenv("GAMMA", 1))
+    resolved_frozen_hours = int(frozen_hours if frozen_hours is not None else os.getenv("FROZEN_HOURS", 48))
+    resolved_horizon_days = int(horizon_days if horizon_days is not None else os.getenv("HORIZON_DAYS", 10))
+    smooth_peak_ratio = float(os.getenv("SMOOTH_PEAK_RATIO", 1.05))
+    smooth_trough_ratio = float(os.getenv("SMOOTH_TROUGH_RATIO", 0.90))
+    today = date.today()
+
+    return {
+        "lambda": resolved_lambda,
+        "gamma": resolved_gamma,
+        "frozen_hours": resolved_frozen_hours,
+        "horizon_days": resolved_horizon_days,
+        "smooth_peak_ratio": smooth_peak_ratio,
+        "smooth_trough_ratio": smooth_trough_ratio,
+        "today": today,
+        "frozen_date": today + timedelta(hours=resolved_frozen_hours),
+    }
 
 
 # ── Data Loading ───────────────────────────────────────────────────────────────
@@ -93,16 +111,26 @@ def build_day_load(demand: pd.DataFrame, date_col: str = "NEED_DATE") -> pd.Data
 
 # ── Guardrail Helpers ─────────────────────────────────────────────────────────
 
-def is_frozen(date_str: str) -> bool:
+def is_frozen(date_str: str, frozen_date: date) -> bool:
     """REQ-04: Returns True if the proposed date is within the frozen window."""
-    return date.fromisoformat(date_str) <= FROZEN_DATE
+    return date.fromisoformat(date_str) <= frozen_date
 
 
-def inventory_ok(sku_id: str, ship_date_str: str, inv_lookup: dict[str, str]) -> bool:
-    """REQ-05: Returns True if on-hand or ASN will be ready before the ship date."""
+def inventory_ok(
+    sku_id: str,
+    ship_date_str: str,
+    qty_cases: float,
+    inv_lookup: dict[str, str],
+    on_hand_lookup: dict[str, float],
+) -> bool:
+    """REQ-05: Allow if enough on-hand exists or the ASN arrives by the ship date."""
+    on_hand = float(on_hand_lookup.get(sku_id, 0) or 0)
+    if on_hand >= float(qty_cases):
+        return True
+
     asn_eta = inv_lookup.get(sku_id)
     if asn_eta is None:
-        return True  # No ASN record; assume available
+        return False
     return ship_date_str >= asn_eta
 
 
@@ -145,11 +173,14 @@ def backroom_ok(
 
 def smooth(
     soft_orders: pd.DataFrame,
+    hard_orders: pd.DataFrame,
     dc_cap_lookup: dict[tuple[str, str], float],
     inv_lookup: dict[str, str],
+    on_hand_lookup: dict[str, float],
     store_cal_lookup: dict[str, str],
     backroom_caps: dict[str, float],
     all_dates: list[str],
+    config: dict[str, float | int | date],
     avg_by_resource: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
@@ -169,13 +200,17 @@ def smooth(
     running_load: dict[tuple[str, str], float] = {}
     # Store backroom running load: (date, store) → pallets
     store_day_load: dict[tuple[str, str], float] = {}
+    # HARD load reservation: (date, resource) → locked pallets
+    hard_load: dict[tuple[str, str], float] = {}
 
     # Seed the running load with all demand already on each date
-    for _, row in soft_orders.iterrows():
+    for _, row in pd.concat([soft_orders, hard_orders], ignore_index=True).iterrows():
         key = (row["NEED_DATE"], row["RESOURCE_TYPE"])
         running_load[key] = running_load.get(key, 0) + row["QTY_PALLETS"]
         skey = (row["NEED_DATE"], row["DEST_LOC"])
         store_day_load[skey] = store_day_load.get(skey, 0) + row["QTY_PALLETS"]
+        if row["PRIORITY"] == "HARD":
+            hard_load[key] = hard_load.get(key, 0) + row["QTY_PALLETS"]
 
     result_rows = []
 
@@ -183,6 +218,7 @@ def smooth(
         need_date  = order["NEED_DATE"]
         resource   = order["RESOURCE_TYPE"]
         pallets    = order["QTY_PALLETS"]
+        qty_cases  = order["QTY_CASES"]
         sku_id     = order["SKU_ID"]
         store_id   = order["DEST_LOC"]
         shelf_life = order.get("SHELF_LIFE", 30)
@@ -197,24 +233,27 @@ def smooth(
         # Trigger: attempt smoothing if this day's per-resource load is a peak
         # (above DC capacity OR above the per-resource daily average * PEAK_RATIO)
         avg_load_for_resource = avg_by_resource.get(resource, 0.0)
-        peak_threshold = avg_load_for_resource * SMOOTH_PEAK_RATIO
-        if (load_on_need > peak_threshold or load_on_need > cap_on_need) and not is_frozen(need_date):
+        peak_threshold = avg_load_for_resource * float(config["smooth_peak_ratio"])
+        if (load_on_need > peak_threshold or load_on_need > cap_on_need) and not is_frozen(need_date, config["frozen_date"]):
             # Search backward for a trough day within HORIZON_DAYS
             candidate_dates = [
                 d for d in all_dates
-                if d < need_date and not is_frozen(d)
+                if d < need_date and not is_frozen(d, config["frozen_date"])
             ]
-            candidate_dates = sorted(candidate_dates, reverse=True)[:HORIZON_DAYS]
+            candidate_dates = sorted(candidate_dates, reverse=True)[:int(config["horizon_days"])]
+            best_candidate = None
+            best_score = None
 
             for candidate in candidate_dates:
                 ckey = (candidate, resource)
                 cap_candidate = dc_cap_lookup.get(ckey, 0)
                 load_candidate = running_load.get(ckey, 0)
+                hard_load_candidate = hard_load.get(ckey, 0)
                 headroom = cap_candidate - load_candidate
 
                 if headroom < pallets:
                     continue
-                if not inventory_ok(sku_id, candidate, inv_lookup):
+                if not inventory_ok(sku_id, candidate, qty_cases, inv_lookup, on_hand_lookup):
                     continue
                 if not shelf_life_ok(candidate, need_date, shelf_life):
                     continue
@@ -223,26 +262,38 @@ def smooth(
                 if not backroom_ok(candidate, store_id, pallets, backroom_caps, store_day_load):
                     continue
 
-                # Variance check: only move if the resulting load on the candidate day
-                # will be strictly lighter than the source day's current load.
-                # This guarantees every move flattens the curve (peak goes down, trough goes up
-                # but not higher than where the peak was).
-                if load_candidate + pallets >= load_on_need:
+                # Keep destination meaningfully lighter than the source after the move.
+                if load_candidate + pallets >= load_on_need * float(config["smooth_trough_ratio"]):
                     continue
 
+                days_early = (date.fromisoformat(need_date) - date.fromisoformat(candidate)).days
+                flattening_gain = load_on_need - (load_candidate + pallets)
+                hard_pressure_penalty = (float(config["lambda"]) / 100.0) * (
+                    hard_load_candidate / max(cap_candidate, 1)
+                )
+                early_ship_penalty = float(config["gamma"]) * days_early
+                score = flattening_gain - hard_pressure_penalty - early_ship_penalty
+
+                if score <= 0:
+                    continue
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_candidate = candidate
+
+            if best_candidate is not None:
+                ckey = (best_candidate, resource)
                 # Valid window found — move the order
                 # Remove from old date, add to new date in running loads
                 running_load[need_key] = running_load.get(need_key, 0) - pallets
                 running_load[ckey] = running_load.get(ckey, 0) + pallets
 
                 old_skey = (need_date, store_id)
-                new_skey = (candidate, store_id)
+                new_skey = (best_candidate, store_id)
                 store_day_load[old_skey] = store_day_load.get(old_skey, 0) - pallets
                 store_day_load[new_skey] = store_day_load.get(new_skey, 0) + pallets
 
-                smoothed_date = candidate
+                smoothed_date = best_candidate
                 move_reason = "Pull-forward (capacity constraint)"
-                break
             else:
                 move_reason = "⚠️ No valid window — capacity alert"
 
@@ -314,12 +365,25 @@ def compute_kpis(
 
 # ── Main Entrypoint ────────────────────────────────────────────────────────────
 
-def solve(db_path: str = DB_PATH) -> dict:
+def solve(
+    db_path: str = DB_PATH,
+    *,
+    horizon_days: int | None = None,
+    frozen_hours: int | None = None,
+    lambda_val: float | None = None,
+    gamma_val: float | None = None,
+) -> dict:
     """
     Full solve pipeline.
     Returns a dict with: 'plan' DataFrame and 'kpis' dict.
     Also writes the smoothed_plan table back to SQLite.
     """
+    config = get_runtime_config(
+        lambda_val=lambda_val,
+        gamma_val=gamma_val,
+        frozen_hours=frozen_hours,
+        horizon_days=horizon_days,
+    )
     data = load_data(db_path)
     demand       = data["demand"]
     dc_capacity  = data["dc_capacity"]
@@ -333,6 +397,7 @@ def solve(db_path: str = DB_PATH) -> dict:
     # Build lookups
     dc_cap_lookup   = get_daily_capacity(dc_capacity)
     inv_lookup      = dict(zip(inventory["SKU_ID"], inventory["ASN_ETA"]))
+    on_hand_lookup  = dict(zip(inventory["SKU_ID"], inventory["ON_HAND_AVAIL"]))
     store_cal_lookup = dict(zip(store_master["STORE_ID"], store_master["DELIVERY_CALENDAR"]))
     backroom_caps   = dict(zip(store_master["STORE_ID"], store_master["BACKROOM_CAP"]))
     all_dates       = sorted(dc_capacity["OP_DATE"].unique().tolist())
@@ -357,8 +422,9 @@ def solve(db_path: str = DB_PATH) -> dict:
 
     # Smooth SOFT orders
     soft_plan = smooth(
-        soft_orders, dc_cap_lookup, inv_lookup,
+        soft_orders, hard_orders, dc_cap_lookup, inv_lookup, on_hand_lookup,
         store_cal_lookup, backroom_caps, all_dates,
+        config=config,
         avg_by_resource=avg_by_resource,
     )
 
