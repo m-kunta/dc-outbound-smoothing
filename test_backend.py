@@ -570,3 +570,24 @@ def test_ec_01_empty_demand_handled(tmp_path):
     
     assert len(result["plan"]) == 0
     assert result["kpis"]["n_moved"] == 0
+
+
+def test_ec_03_all_hard_orders_no_shift(tmp_path):
+    db_path = str(tmp_path / "all_hard.db")
+    generate(seed=42, db_path=db_path)
+    
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE demand SET PRIORITY = 'HARD'")
+        
+    result = solve(db_path=db_path)
+    
+    assert result["kpis"]["n_moved"] == 0
+    assert result["kpis"]["cv_before"] == result["kpis"]["cv_after"]
+
+
+def test_sv_21_cube_utilisation_range():
+    result = solve(db_path=DB_PATH)
+    kpis = result["kpis"]
+    
+    assert 0 <= kpis["cube_util_before"] <= 200
+    assert 0 <= kpis["cube_util_after"] <= 200
