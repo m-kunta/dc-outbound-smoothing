@@ -591,3 +591,12 @@ def test_sv_21_cube_utilisation_range():
     
     assert 0 <= kpis["cube_util_before"] <= 200
     assert 0 <= kpis["cube_util_after"] <= 200
+
+
+def test_dl_08_corrupt_file_rejected():
+    corrupt_bytes = b"\x00\x01\x02\x03\x04\x05\xff\xff"
+    df, errors = load_csv("demand", corrupt_bytes)
+    
+    assert df is None
+    assert len(errors) > 0
+    assert any("Could not parse CSV" in e for e in errors)
