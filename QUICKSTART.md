@@ -26,18 +26,21 @@ pip install -r requirements.txt
 
 LevelSet uses GenAI to generate Planner Insights and Triage Exceptions.
 
+### Option A: Enter Key in the Dashboard (Easiest)
+Once you launch the app, simply select your provider (Gemini, OpenAI, Anthropic, Groq, or Ollama) from the sidebar dropdown and paste your API key directly into the secure text field.
+
+### Option B: Use an Environment File
+If you prefer not to enter your key every time, you can set it via a `.env` file:
 1. Copy the example environment file:
    ```bash
    cp .env.example .env
    ```
-2. Open `.env` in a text editor and add an API key for your preferred provider (Google Gemini is the default, but you can also use OpenAI, Anthropic, or Groq).
+2. Open `.env` in a text editor and add an API key for your preferred provider.
    ```env
    # Example for Google Gemini
    GEMINI_API_KEY=your_api_key_here
-   LLM_PROVIDER=gemini
+   LLM_PROVIDER=Gemini
    ```
-
-*Note: You can also enter the API key directly in the Streamlit UI later if you prefer not to use the `.env` file.*
 
 ---
 
@@ -88,13 +91,14 @@ Scroll down to the **Exception Review** section. Here you will find any "Capacit
 
 ---
 
-## 6. Upload Your Own Data
+## 6. Upload Real Data & Exporting
 
 Want to try LevelSet with real data?
 1. In the sidebar, change the **Data Source** radio button from *Synthetic Data* to *Upload Real Data*.
 2. Expand the upload boxes and download the CSV templates for each table.
 3. Replace the template data with your own, adhering to the required column names and formats.
 4. Upload all 5 CSVs and click the **Load Data & Run Solver** button.
+5. **Export the Plan:** Once your data is processed, you can download the optimized ship schedule as a CSV or JSON file to import into your WMS/OMS.
 
 ---
 
