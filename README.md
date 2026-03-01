@@ -45,6 +45,8 @@ See [REQUIREMENTS.md](REQUIREMENTS.md) for full solver logic, objective function
 
 ### 📊 Dashboard
 
+![LevelSet Dashboard](assets/dashboard.png)
+
 - **KPI Scorecards** — Outbound CV, OSA (HARD orders), shifted orders, alerts, cube utilisation
 - **Before/After Bar Chart** — Red (unconstrained) vs. green (smoothed) daily volume
 - **Smoothed Ship Schedule** — Filterable table with colour-coded rows (green = moved, red = alert)
@@ -53,6 +55,8 @@ See [REQUIREMENTS.md](REQUIREMENTS.md) for full solver logic, objective function
 ---
 
 ### 🤖 AI Planner Insight
+
+![AI Planner Insight](assets/planner_insight.png)
 
 **Location:** Dashboard → between Schedule Table and Exception Review
 
@@ -73,6 +77,8 @@ Supports: Gemini, OpenAI, Anthropic, Groq, Ollama (switchable via sidebar dropdo
 ---
 
 ### 🚨 AI Exception Triage
+
+![AI Exception Triage](assets/exception_triage.png)
 
 **Location:** Dashboard → Exception Review section (below AI Planner Insight)
 
