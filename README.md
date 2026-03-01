@@ -17,20 +17,34 @@ DC outbound plans built purely off store need dates spike on two or three days a
 
 ---
 
-## How It Works
+## Algorithm Overview
 
-The solver classifies each order as **HARD** (safety stock breach, promo launch) or **SOFT** (routine fill, inventory build). HARD orders are pinned to their need date. SOFT orders are eligible for smoothing across a configurable look-ahead horizon, subject to four guardrails:
+LevelSet employs a greedy heuristic approach designed specifically for high-volume operational environments where exact optimization (MIP/LP) is computationally prohibitive on a daily run-cycle.
 
-| Guardrail | What it checks |
-|---|---|
-| DC Capacity | Outbound throughput by resource type (Conveyable, Non-Conveyable, Bulk) |
-| Store Calendar | Order can only ship on days the store takes deliveries |
-| Inventory Readiness | No pull-forward if on-hand stock or ASN hasn't arrived yet |
-| Shelf-Life (MRSL) | Move must not push product outside its freshness window |
+### 1. Objective Function Context
 
-If a valid trough window exists, the order is pulled forward. If not, it surfaces as a **Capacity Alert** for planner review.
+While executed as a fast heuristic, the solver conceptually approximates the minimization of the daily variance $Z$:
 
-See [REQUIREMENTS.md](REQUIREMENTS.md) for full solver logic, objective function, data feed specs, and KPI targets.
+$$Z = \sum_{t} (V_t - \mu_H)^2 + \lambda(\text{OSA\_Penalty}) + \gamma(\text{EarlyShipPenalty})$$
+
+- **$V_t$**: Outbound volume on day $t$.
+- **$\mu_H$**: Mean daily volume across the horizon.
+- **$\lambda$ (OSA Penalty)**: Weight applied to missed or delayed HARD orders (enforces service integrity).
+- **$\gamma$ (Early Ship Penalty)**: Weight applied to the number of days a SOFT order is pulled forward (minimizes unnecessary store backroom bloat).
+
+### 2. Execution Flow
+
+1. **Classification**: Orders are categorized as `HARD` (safety stock breach, promo launch—immune to movement) or `SOFT` (routine fill, inventory build—eligible for load-leveling). 
+2. **Peak Detection**: The algorithm identifies days where total load exceeds either absolute DC capacity or a dynamic threshold (e.g., $1.2 \times \mu_H$). Smoothing logic is only invoked for operations crossing these limits to prevent over-optimization of naturally flat days.
+3. **Trough Search (Backward Window)**: For each `SOFT` order on a peak day, the solver scans backward within the configured `HORIZON_DAYS`. It evaluates candidate days against four strict guardrails:
+    - **Resource Capacity**: Outbound throughput limits by specific zone (Conveyable, Non-Conveyable, Bulk).
+    - **Store Calendar**: Store receiving schedule matrix.
+    - **Inventory Readiness**: No phantom picking. Product must physically be on-hand, or ASN ETA must precede the candidate ship date.
+    - **Shelf-Life (MRSL)**: Re-routing must not push product outside its freshness window.
+4. **Variance Validation**: A move is only committed if pulling the volume forward strictly reduces the volume delta between the peak (source) and trough (destination) day.
+5. **Exception Generation**: Volume that cannot find a valid trough window surfaces as a Capacity Alert for manual override.
+
+See [REQUIREMENTS.md](REQUIREMENTS.md) for data feed specifications and KPI targets.
 
 ---
 
@@ -56,8 +70,8 @@ See [REQUIREMENTS.md](REQUIREMENTS.md) for full solver logic, objective function
 
 To test LevelSet with your own network volume rather than the synthetic generator:
 - **Bring Your Own Data (BYOD):** Toggle the Data Source in the sidebar to "Upload Real Data"
-- **CSV Templates:** Upload your 5 core data feeds (Constraints, Inventory, SKU Master, Store Calendars, Demand/Orders) matching the expected schema
-- **Export Capabilities:** Once the solver completes, seamlessly download the optimized ship schedule as CSV or JSON for ingestion into your local WMS/OMS.
+- **CSV Templates:** Upload the 5 core data feeds (Constraints, Inventory, SKU Master, Store Calendars, Demand/Orders) matching the expected schema.
+- **Export Capabilities:** Once the solver completes, download the optimized ship schedule as CSV or JSON for ingestion into local systems.
 
 ---
 
@@ -67,7 +81,7 @@ To test LevelSet with your own network volume rather than the synthetic generato
 
 **Location:** Dashboard → between Schedule Table and Exception Review
 
-A high-level AI briefing of the full plan. After running the solver, click **✨ Generate Planner Insight** to receive a 150-word "Situation → Actions" summary that covers:
+An automated briefing of the generated plan. After running the solver, click **✨ Generate Planner Insight** to receive a structured "Situation → Actions" summary that covers:
 
 - What the solver achieved (CV change, OSA, orders shifted)
 - Risks from any unresolved capacity alerts

@@ -1,6 +1,6 @@
 # LevelSet DC Outbound Smoothing — Quickstart Guide
 
-Welcome to LevelSet! This guide will get you up and running with the DC Outbound Smoothing prototype in just a few minutes, assuming you already have Python installed.
+This guide explains how to install and run the DC Outbound Smoothing prototype. It requires Python 3.10+ to be installed on your machine.
 
 ---
 
