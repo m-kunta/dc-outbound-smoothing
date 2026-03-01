@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+scipy
+altair
+python-dotenv
+
+# Optional AI providers (uncomment what you need)
+# google-genai
+# openai
+# anthropic
+# groq
+# ollama
