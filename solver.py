@@ -35,6 +35,8 @@ HORIZON_DAYS   = int(os.getenv("HORIZON_DAYS", 10))
 # Move guardrail: only move to days where resulting load < source load * TROUGH_RATIO
 SMOOTH_PEAK_RATIO   = float(os.getenv("SMOOTH_PEAK_RATIO", 1.05))   # flag day as peak if >105% avg
 SMOOTH_TROUGH_RATIO = float(os.getenv("SMOOTH_TROUGH_RATIO", 0.90)) # accept trough if load < 90% source
+DEFAULT_DELIVERY_CALENDAR = "Mon,Tue,Wed,Thu,Fri"
+DEFAULT_BACKROOM_CAP = 999
 TODAY = date.today()
 FROZEN_DATE = TODAY + timedelta(hours=FROZEN_HOURS)
 
@@ -121,7 +123,7 @@ def _get_weekday(date_str: str) -> str:
 
 def store_delivery_ok(date_str: str, store_id: str, store_lookup: dict[str, str]) -> bool:
     """REQ-06: Returns True if the date is a valid delivery day for this store."""
-    calendar = store_lookup.get(store_id, "Mon,Tue,Wed,Thu,Fri")
+    calendar = store_lookup.get(store_id, DEFAULT_DELIVERY_CALENDAR)
     weekday = _get_weekday(date_str)
     return weekday in calendar
 
@@ -134,7 +136,7 @@ def backroom_ok(
     store_day_load: dict[tuple[str, str], float],
 ) -> bool:
     """REQ-06: Returns True if adding this order doesn't bust the store's backroom cap."""
-    cap = backroom_caps.get(store_id, 999)
+    cap = backroom_caps.get(store_id, DEFAULT_BACKROOM_CAP)
     current = store_day_load.get((date_str, store_id), 0)
     return current + pallets <= cap
 
