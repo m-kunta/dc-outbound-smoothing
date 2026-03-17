@@ -38,6 +38,18 @@ data_gen.py → levelset.db (SQLite)
 
 `data_loader.py` handles real-user CSV uploads as an alternative to synthetic data. `llm_providers.py` provides optional AI-generated planner insights via a multi-provider factory (Gemini, OpenAI, Anthropic, Groq, Ollama).
 
+### Module Summary
+
+| File | Role |
+|---|---|
+| `app.py` | Streamlit dashboard |
+| `solver.py` | Optimization engine |
+| `data_gen.py` | Synthetic data generator → `levelset.db` |
+| `data_loader.py` | Real CSV upload handler (alternative to synthetic data) |
+| `llm_providers.py` | Multi-provider LLM factory |
+
+Solver parameters can also be set via a `.env` file (same variable names as the table above) instead of the Streamlit sidebar.
+
 ### Database (levelset.db) — 5 input tables + 1 output
 
 - **demand** — ~2,000 replenishment order lines with `order_type` (HARD/SOFT), `need_date`, volume

@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+CLAUDE.md
 
 # Secrets
 .env
@@ -13,3 +14,4 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+.claude/
