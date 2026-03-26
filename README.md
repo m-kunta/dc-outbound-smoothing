@@ -4,7 +4,7 @@
 
 **Author:** Mohith Kunta · [github.com/m-kunta](https://github.com/m-kunta)  
 **Domain:** Supply Chain Planning / DC Replenishment  
-**Stack:** Python · Streamlit · SQLite · SciPy · Altair · Google Gemini (optional)  
+**Stack:** Python · Streamlit · SQLite · Pandas · Altair · Google Gemini (optional)  
 **Status:** ✅ Built & Running
 
 ---

@@ -1,6 +1,6 @@
 # LevelSet DC Outbound Smoothing — Quickstart Guide
 
-This guide explains how to install and run the DC Outbound Smoothing prototype. It requires Python 3.10+ to be installed on your machine.
+This guide explains how to install and run the DC Outbound Smoothing prototype. It requires Python 3.9+ to be installed on your machine.
 
 ---
 
@@ -55,7 +55,19 @@ python data_gen.py
 
 ---
 
-## 4. Run the Dashboard
+## 4. Run the Test Suite (Optional but Recommended)
+
+Before launching the dashboard, you can verify that all backend logic is working correctly on your machine:
+
+```bash
+pytest test_backend.py -v
+```
+
+You should see **34 tests pass**. These cover the solver guardrails, unit conversion math, data loader validation, and edge-case handling. If any tests fail, check that all dependencies in `requirements.txt` were installed correctly.
+
+---
+
+## 5. Run the Dashboard
 
 Launch the Streamlit planning interface:
 
@@ -67,7 +79,7 @@ This will automatically open your default web browser to [http://localhost:8501]
 
 ---
 
-## 5. Using the Application
+## 6. Using the Application
 
 ### 1) Explore the Before & After
 
@@ -91,7 +103,7 @@ Scroll down to the **Exception Review** section. Here you will find any "Capacit
 
 ---
 
-## 6. Upload Real Data & Exporting
+## 7. Upload Real Data & Exporting
 
 Want to try LevelSet with real data?
 1. In the sidebar, change the **Data Source** radio button from *Synthetic Data* to *Upload Real Data*.

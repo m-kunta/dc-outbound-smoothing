@@ -9,9 +9,9 @@
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| **Language** | Python 3.10+ | Same stack as Phantom Inventory project — consistent portfolio |
+| **Language** | Python 3.9+ | Same stack as Phantom Inventory project — consistent portfolio |
 | **Data** | Pandas + SQLite | Lightweight, portable, no server needed for a prototype |
-| **Solver** | SciPy `minimize` (SLSQP) | Handles the constrained objective function (REQ-03) without a commercial solver license |
+| **Solver** | Greedy Heuristic Engine | Custom backward-scanning greedy algorithm that optimizes the objective function without heavy dependencies |
 | **Dashboard** | Streamlit | Interactive exploration, rapid iteration, proven in the portfolio |
 | **Config** | `.env` + `python-dotenv` | API keys and default parameters |
 | **AI Layer** | `llm_providers.py` (port from Phantom Inventory) | Reuse existing multi-provider factory for planner insights |
@@ -70,7 +70,7 @@
 | `classify_orders(df)` | — | Splits demand into HARD (safety stock, promo) and SOFT (routine). HARD orders lock to their NEED_DATE. |
 | `convert_units(demand, sku_master)` | REQ-02 | Converts demand units → capacity UOM (cube/pallets) using the SKU master's `UOM_CONV` and `CASE_CUBE`. |
 | `check_capacity(demand, dc_cap)` | REQ-01 | Aggregates demand by day × resource and flags days where demand > capacity at both node and zone level. |
-| `smooth(soft_orders, dc_cap, horizon)` | REQ-03 | The optimizer. Minimizes the objective function $Z$ by shifting soft orders to trough days within the look-ahead window. Uses SciPy SLSQP with Lambda/Gamma penalty terms. |
+| `smooth(soft_orders, dc_cap, horizon)` | REQ-03 | The optimizer. Minimizes the objective function $Z$ by shifting soft orders to trough days within the look-ahead window. Uses a greedy scoring algorithm with Lambda/Gamma penalty terms. |
 | `apply_guardrails(plan, inv, store, sku)` | REQ-04/05/06 | Post-optimization validation: frozen zone (next 48h untouchable), inventory readiness (ASN ETA check), store delivery calendar, backroom cap, MRSL/shelf-life. Reverts any violating moves. |
 | `compute_kpis(before, after)` | — | Calculates CV, OSA proxy, OT estimate, cube util before and after smoothing for the dashboard. |
 

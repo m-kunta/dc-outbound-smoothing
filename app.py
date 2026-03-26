@@ -383,7 +383,7 @@ with col_r:
     st.subheader("🚦 Orders by Move Status")
     status_counts = plan["MOVE_REASON"].value_counts().reset_index()
     status_counts.columns = ["Status", "Count"]
-    st.dataframe(status_counts, use_container_width=True, hide_index=True)
+    st.dataframe(status_counts, width="stretch", hide_index=True)
 
 st.markdown("---")
 
@@ -421,7 +421,7 @@ def _row_color(row: pd.Series) -> list[str]:
 
 
 styled = display_df.style.apply(_row_color, axis=1)
-st.dataframe(styled, use_container_width=True, hide_index=True, height=350)
+st.dataframe(styled, width="stretch", hide_index=True, height=350)
 
 st.markdown("---")
 
@@ -574,7 +574,7 @@ if exceptions:
                            "Resource", "Pallets", "Need Date", "Days Out",
                            "Impact Score", "Action"]]
     st.dataframe(display_exc.style.apply(_exc_color, axis=1),
-                 use_container_width=True, height=300)
+                 width="stretch", height=300)
 
     # ── AI Exception Triage ───────────────────────────────────────────────────
     st.markdown("---")
