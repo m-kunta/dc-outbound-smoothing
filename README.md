@@ -135,6 +135,61 @@ DC outbound plans built purely off store need dates spike on two or three days a
 
 ---
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              DATA FLOW                                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐ │
+│  │   demand    │     │ dc_capacity │     │ inventory   │     │ sku_master  │ │
+│  │  (Orders)   │     │  (Caps)     │     │  (On-Hand)  │     │ (UOM/Life) │ │
+│  └──────┬──────┘     └──────┬──────┘     └──────┬──────┘     └──────┬──────┘ │
+│         │                   │                   │                   │            │
+│         └───────────────────┴───────────────────┴───────────────────┘            │
+│                                         │                                     │
+│                                         ▼                                     │
+│                              ┌──────────────────────┐                      │
+│                              │      solver.py         │                      │
+│                              │   ┌───────────────┐   │                      │
+│                              │   │ load_data()   │───┼── Reads 5 input     │
+│                              │   ├───────────────┤   │     tables            │
+│                              │   │ convert_units │───┼── Cases → Pallets   │
+│                              │   ├───────────────┤   │                      │
+│                              │   │classify_orders│───┼── HARD vs SOFT       │
+│                              │   ├───────────────┤   │                      │
+│                              │   │    smooth()   │───┼── Core algorithm   │
+│                              │   ├───────────────┐   │                      │
+│                              │   │ compute_kpis │───┼── CV, OSA, alerts   │
+│                              │   └───────────────┘   │                      │
+│                              └──────────┬───────────┘                      │
+│                                         │                                  │
+│                                         ▼                                  │
+│  ┌──────────────────────────────────────────────────────────────────────────┐ │
+│  │                              OUTPUT                                        │ │
+│  │  ┌─────────────────────┐     ┌──────────────────────┐                 │ │
+│  │  │    smoothed_plan    │     │       kpis           │                 │ │
+│  │  │ (Ship schedule +   │     │  (cv_before/after,  │                 │ │
+│  │  │  SMOOTHED_DATE)     │     │   osa_pct, shifted) │                 │ │
+│  │  └─────────────────────┘     └──────────────────────┘                 │ │
+│  └──────────────────────────────────────────────────────────────────────────┘ │
+│                                                                               │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Solver Components
+
+| Component | Purpose |
+|---|---|
+| `load_data()` | Reads all 5 input tables from SQLite into DataFrames |
+| `convert_units()` | `QTY_PALLETS = ceil(QTY_CASES / UOM_CONV)` — all capacity comparisons in pallets |
+| `classify_orders()` | HARD = pinned to NEED_DATE; SOFT = eligible for smoothing |
+| `smooth()` | Greedy backward-scan with 5 guardrail checks → finds valid troughs |
+| `compute_kpis()` | Returns CV, OSA%, alert counts, cube utilisation |
+
+---
+
 ## Algorithm Overview
 
 LevelSet employs a greedy heuristic approach designed specifically for high-volume operational environments where exact optimization (MIP/LP) is computationally prohibitive on a daily run-cycle.
