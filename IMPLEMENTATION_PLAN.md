@@ -254,12 +254,46 @@ Each phase is self-contained and testable before moving to the next.
 
 ---
 
+## Phase 7 — Multi-DC Support ✅
+
+**Goal:** Route demand across multiple DCs — when one DC's capacity is fully exhausted (even after time-shifting), reroute residual orders to an alternate DC.
+
+**Files changed:** `data_gen.py`, `solver.py`, `app.py`, `test_backend.py`
+
+**Implementation:**
+
+**Data layer:**
+- Added `DC_CONFIGS` dict with DC001 (primary, full throughput) and DC002 (secondary, ~70% throughput)
+- `build_dc_capacity()` now iterates both DCs → 180 rows instead of 90
+- `build_demand()` assigns `DC_ID` to each order (90% DC001, 10% DC002)
+
+**Solver — two-phase design:**
+- `get_daily_capacity()` returns `(dc_id, date, resource)` 3-tuple keys (backward-compat: old DBs without `DC_ID` get defaulted to "DC001")
+- Phase 1: `smooth()` runs independently per DC with that DC's per-DC capacity sub-lookup; plan gets `SMOOTHED_DC` column
+- Phase 2: remaining `"⚠️ No valid window"` alerts are retried across all alternate DCs; if any (dc, date) combination passes all guardrails, the order is rerouted — `SMOOTHED_DC`, `SMOOTHED_DATE`, `SHIFT_DAYS`, and `MOVE_REASON` are updated in-place
+- KPIs gain `n_rerouted` count
+
+**Dashboard:**
+- 6th KPI scorecard: "Cross-DC Reroutes"
+- "Source DC" filter in the schedule table filter row
+- `DC_ID` and `SMOOTHED_DC` columns in the displayed plan table
+
+**Test coverage:** 4 new tests (38 total) — two-DC capacity table, `DC_ID` in demand, `SMOOTHED_DC` in plan, `n_rerouted` in KPIs.
+
+**Design decisions:**
+- `smooth()` signature is unchanged — tests that call it directly still pass without modification
+- Cross-DC reroute only iterates; it does not call `smooth()` again (which would re-seed running loads and miscount capacity)
+- KPI cube utilisation collapses per-DC caps by summing across DCs, maintaining backward-compatible CV/cube math
+- The reroute fires only when intra-DC time-shifting genuinely fails — with well-spread synthetic data, `n_rerouted=0` is the happy-path outcome showing the solver is not capacity-constrained
+
+---
+
 ## Roadmap
 
 | # | Feature | Status |
 |---|---|---|
 | 1 | What-If Scenario Comparison | ✅ Done |
-| 2 | Multi-DC support | 🔜 Planned |
+| 2 | Multi-DC support | ✅ Done |
 | 3 | Expanded test coverage (P1/P2) | 🔜 Planned |
 | 4 | REST API wrapper (FastAPI) | 🔜 Planned |
 | 5 | LP benchmark (PuLP/OR-Tools) | 🔜 Planned |
