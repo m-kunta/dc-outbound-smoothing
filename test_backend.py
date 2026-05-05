@@ -596,7 +596,35 @@ def test_sv_21_cube_utilisation_range():
 def test_dl_08_corrupt_file_rejected():
     corrupt_bytes = b"\x00\x01\x02\x03\x04\x05\xff\xff"
     df, errors = load_csv("demand", corrupt_bytes)
-    
+
     assert df is None
     assert len(errors) > 0
     assert any("Could not parse CSV" in e for e in errors)
+
+
+# ── Multi-DC tests ─────────────────────────────────────────────────────────────
+
+def test_dg_05_two_dcs_in_capacity():
+    with sqlite3.connect(DB_PATH) as conn:
+        dc_ids = pd.read_sql("SELECT DISTINCT DC_ID FROM dc_capacity", conn)["DC_ID"].tolist()
+    assert "DC001" in dc_ids
+    assert "DC002" in dc_ids
+
+
+def test_dg_06_demand_has_dc_id_column():
+    with sqlite3.connect(DB_PATH) as conn:
+        cols = pd.read_sql("SELECT * FROM demand LIMIT 1", conn).columns.tolist()
+    assert "DC_ID" in cols
+
+
+def test_sv_31_smoothed_dc_in_plan():
+    result = solve(db_path=DB_PATH)
+    assert "SMOOTHED_DC" in result["plan"].columns
+    # Every row must have a valid DC assignment
+    assert result["plan"]["SMOOTHED_DC"].notna().all()
+
+
+def test_sv_32_n_rerouted_in_kpis():
+    result = solve(db_path=DB_PATH)
+    assert "n_rerouted" in result["kpis"]
+    assert result["kpis"]["n_rerouted"] >= 0

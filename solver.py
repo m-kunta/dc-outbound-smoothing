@@ -88,10 +88,10 @@ def convert_units(demand: pd.DataFrame, sku_master: pd.DataFrame) -> pd.DataFram
 
 
 # ── Capacity Aggregation (REQ-01) ────────────────────────────────────────────
-def get_daily_capacity(dc_capacity: pd.DataFrame) -> dict[tuple[str, str], float]:
-    """Build a lookup: (date_str, resource_type) → max_throughput in pallets."""
+def get_daily_capacity(dc_capacity: pd.DataFrame) -> dict[tuple[str, str, str], float]:
+    """Build a lookup: (dc_id, date_str, resource_type) → max_throughput in pallets."""
     return {
-        (row["OP_DATE"], row["RESOURCE_ID"]): row["MAX_THRU"]
+        (row["DC_ID"], row["OP_DATE"], row["RESOURCE_ID"]): row["MAX_THRU"]
         for _, row in dc_capacity.iterrows()
     }
 
@@ -374,7 +374,12 @@ def solve(
     gamma_val: float | None = None,
 ) -> dict:
     """
-    Full solve pipeline.
+    Full solve pipeline with multi-DC support.
+
+    Phase 1: Solve each DC independently using the greedy smooth() algorithm.
+    Phase 2: For orders that received a capacity alert in their primary DC,
+             attempt cross-DC rerouting to any alternate DC with headroom.
+
     Returns a dict with: 'plan' DataFrame and 'kpis' dict.
     Also writes the smoothed_plan table back to SQLite.
     """
@@ -394,13 +399,26 @@ def solve(
     # Enrich demand with unit conversion and SKU attributes
     demand = convert_units(demand, sku_master)
 
-    # Build lookups
-    dc_cap_lookup   = get_daily_capacity(dc_capacity)
-    inv_lookup      = dict(zip(inventory["SKU_ID"], inventory["ASN_ETA"]))
-    on_hand_lookup  = dict(zip(inventory["SKU_ID"], inventory["ON_HAND_AVAIL"]))
+    # Backward-compat: databases generated before multi-DC support lack DC_ID columns
+    if "DC_ID" not in demand.columns:
+        demand["DC_ID"] = "DC001"
+    if "DC_ID" not in dc_capacity.columns:
+        dc_capacity["DC_ID"] = "DC001"
+
+    # Full cap lookup: (dc_id, date_str, resource_type) → max_thru
+    full_cap_lookup = get_daily_capacity(dc_capacity)
+    all_dc_ids = sorted(dc_capacity["DC_ID"].unique().tolist())
+    all_dates  = sorted(dc_capacity["OP_DATE"].unique().tolist())
+
+    # Common guardrail lookups
+    inv_lookup       = dict(zip(inventory["SKU_ID"], inventory["ASN_ETA"]))
+    on_hand_lookup   = dict(zip(inventory["SKU_ID"], inventory["ON_HAND_AVAIL"]))
     store_cal_lookup = dict(zip(store_master["STORE_ID"], store_master["DELIVERY_CALENDAR"]))
-    backroom_caps   = dict(zip(store_master["STORE_ID"], store_master["BACKROOM_CAP"]))
-    all_dates       = sorted(dc_capacity["OP_DATE"].unique().tolist())
+    backroom_caps    = dict(zip(store_master["STORE_ID"], store_master["BACKROOM_CAP"]))
+
+    # Helper: per-DC capacity sub-lookup for smooth()
+    def _dc_cap(dc_id: str) -> dict[tuple[str, str], float]:
+        return {(d, r): cap for (dc, d, r), cap in full_cap_lookup.items() if dc == dc_id}
 
     # Split HARD and SOFT
     hard_orders = demand[demand["PRIORITY"] == "HARD"].copy()
@@ -410,30 +428,103 @@ def solve(
     hard_orders["SMOOTHED_DATE"] = hard_orders["NEED_DATE"]
     hard_orders["SHIFT_DAYS"]    = 0
     hard_orders["MOVE_REASON"]   = "Locked (HARD priority)"
+    hard_orders["SMOOTHED_DC"]   = hard_orders["DC_ID"]
 
-    # Compute per-resource average daily load for the peak-trigger heuristic
-    all_demand = pd.concat([soft_orders, hard_orders])
-    avg_by_resource = (
-        all_demand.groupby("RESOURCE_TYPE")["QTY_PALLETS"]
-        .sum()
-        .div(max(len(all_dates), 1))
-        .to_dict()
-    )
+    # ── Phase 1: solve each DC independently ──────────────────────────────────
+    soft_plans: list[pd.DataFrame] = []
+    for dc in all_dc_ids:
+        dc_soft = soft_orders[soft_orders["DC_ID"] == dc].copy()
+        dc_hard = hard_orders[hard_orders["DC_ID"] == dc].copy()
+        if dc_soft.empty:
+            continue
+        dc_lookup = _dc_cap(dc)
+        avg_by_resource = (
+            pd.concat([dc_soft, dc_hard])
+            .groupby("RESOURCE_TYPE")["QTY_PALLETS"]
+            .sum()
+            .div(max(len(all_dates), 1))
+            .to_dict()
+        )
+        dc_plan = smooth(
+            dc_soft, dc_hard, dc_lookup, inv_lookup, on_hand_lookup,
+            store_cal_lookup, backroom_caps, all_dates,
+            config=config,
+            avg_by_resource=avg_by_resource,
+        )
+        dc_plan["SMOOTHED_DC"] = dc
+        soft_plans.append(dc_plan)
 
-    # Smooth SOFT orders
-    soft_plan = smooth(
-        soft_orders, hard_orders, dc_cap_lookup, inv_lookup, on_hand_lookup,
-        store_cal_lookup, backroom_caps, all_dates,
-        config=config,
-        avg_by_resource=avg_by_resource,
-    )
+    soft_plan = pd.concat(soft_plans, ignore_index=True) if soft_plans else pd.DataFrame()
+
+    # ── Phase 2: cross-DC rerouting for remaining capacity alerts ─────────────
+    n_rerouted = 0
+    if len(all_dc_ids) > 1 and not soft_plan.empty:
+        # Seed running loads from the already-scheduled plan for every DC
+        alt_running: dict[str, dict[tuple[str, str], float]] = {dc: {} for dc in all_dc_ids}
+        for _, row in pd.concat([soft_plan, hard_orders], ignore_index=True).iterrows():
+            dc  = row.get("SMOOTHED_DC", row.get("DC_ID", all_dc_ids[0]))
+            key = (row["SMOOTHED_DATE"], row["RESOURCE_TYPE"])
+            alt_running[dc][key] = alt_running[dc].get(key, 0) + row["QTY_PALLETS"]
+
+        alert_mask = soft_plan["MOVE_REASON"].str.startswith("⚠️")
+        for idx in soft_plan[alert_mask].index:
+            order      = soft_plan.loc[idx]
+            primary_dc = order["DC_ID"]
+            need_date  = order["NEED_DATE"]
+            resource   = order["RESOURCE_TYPE"]
+            pallets    = order["QTY_PALLETS"]
+            qty_cases  = order["QTY_CASES"]
+            sku_id     = order["SKU_ID"]
+            store_id   = order["DEST_LOC"]
+            shelf_life = order.get("SHELF_LIFE", 30)
+
+            for alt_dc in all_dc_ids:
+                if alt_dc == primary_dc:
+                    continue
+                running = alt_running[alt_dc]
+                # Try need_date first, then scan backward within horizon
+                candidates = [need_date] + sorted(
+                    [d for d in all_dates if d < need_date
+                     and not is_frozen(d, config["frozen_date"])],
+                    reverse=True,
+                )[:int(config["horizon_days"])]
+
+                for candidate in candidates:
+                    cap  = full_cap_lookup.get((alt_dc, candidate, resource), 0)
+                    load = running.get((candidate, resource), 0)
+                    if cap - load < pallets:
+                        continue
+                    if not inventory_ok(sku_id, candidate, qty_cases, inv_lookup, on_hand_lookup):
+                        continue
+                    if not shelf_life_ok(candidate, need_date, shelf_life):
+                        continue
+                    if not store_delivery_ok(candidate, store_id, store_cal_lookup):
+                        continue
+                    # Accept reroute
+                    running[(candidate, resource)] = load + pallets
+                    shift = (date.fromisoformat(need_date) - date.fromisoformat(candidate)).days
+                    soft_plan.at[idx, "SMOOTHED_DC"]   = alt_dc
+                    soft_plan.at[idx, "SMOOTHED_DATE"]  = candidate
+                    soft_plan.at[idx, "SHIFT_DAYS"]     = shift
+                    soft_plan.at[idx, "MOVE_REASON"]    = f"Cross-DC reroute → {alt_dc}"
+                    n_rerouted += 1
+                    break
+                else:
+                    continue
+                break
 
     # Combine into full plan
     plan = pd.concat([hard_orders, soft_plan], ignore_index=True)
     plan = plan.sort_values(["SMOOTHED_DATE", "RESOURCE_TYPE"])
 
-    # KPIs
-    kpis = compute_kpis(demand, plan, dc_cap_lookup)
+    # KPIs — collapse full_cap to (date, resource) by summing across DCs for CV/cube calc
+    dc_cap_for_kpis: dict[tuple[str, str], float] = {}
+    for (dc, d, r), cap in full_cap_lookup.items():
+        key = (d, r)
+        dc_cap_for_kpis[key] = dc_cap_for_kpis.get(key, 0) + cap
+
+    kpis = compute_kpis(demand, plan, dc_cap_for_kpis)
+    kpis["n_rerouted"] = n_rerouted
 
     # Persist to DB
     with sqlite3.connect(db_path) as conn:

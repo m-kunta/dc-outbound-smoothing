@@ -297,7 +297,7 @@ kpis   = result["kpis"]
 
 # ── KPI Scorecards ────────────────────────────────────────────────────────────
 st.subheader("📊 KPI Summary")
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 
 c1.metric(
     "Outbound CV", f"{kpis['cv_after']:.3f}",
@@ -322,6 +322,11 @@ c4.metric(
     help="SOFT orders with no valid window found — require planner review."
 )
 c5.metric(
+    "Cross-DC Reroutes", f"{kpis.get('n_rerouted', 0)}",
+    delta=None,
+    help="Orders rerouted to an alternate DC after capacity alerts could not be resolved within the primary DC."
+)
+c6.metric(
     "Cube Utilisation", f"{kpis['cube_util_after']:.1f}%",
     delta=f"{kpis['cube_util_after'] - kpis['cube_util_before']:.1f}%",
     delta_color="normal",
@@ -391,12 +396,15 @@ st.markdown("---")
 st.subheader("📋 Smoothed Ship Schedule")
 
 # Filters
-filter_col1, filter_col2, filter_col3 = st.columns(3)
+filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
 with filter_col1:
     priority_filter = st.selectbox("Priority", ["All", "HARD", "SOFT"])
 with filter_col2:
     resource_filter = st.selectbox("Resource", ["All"] + sorted(plan["RESOURCE_TYPE"].unique()))
 with filter_col3:
+    dc_options = ["All"] + sorted(plan["DC_ID"].unique()) if "DC_ID" in plan.columns else ["All"]
+    dc_filter = st.selectbox("Source DC", dc_options)
+with filter_col4:
     moved_only = st.checkbox("Show moved orders only", value=False)
 
 display_df = plan.copy()
@@ -404,11 +412,18 @@ if priority_filter != "All":
     display_df = display_df[display_df["PRIORITY"] == priority_filter]
 if resource_filter != "All":
     display_df = display_df[display_df["RESOURCE_TYPE"] == resource_filter]
+if dc_filter != "All" and "DC_ID" in display_df.columns:
+    display_df = display_df[display_df["DC_ID"] == dc_filter]
 if moved_only:
     display_df = display_df[display_df["SHIFT_DAYS"] > 0]
 
-display_cols = ["ORDER_ID", "SKU_ID", "DEST_LOC", "PRIORITY", "RESOURCE_TYPE",
-                "QTY_CASES", "QTY_PALLETS", "NEED_DATE", "SMOOTHED_DATE", "SHIFT_DAYS", "MOVE_REASON"]
+base_cols = ["ORDER_ID", "SKU_ID", "DEST_LOC", "PRIORITY", "RESOURCE_TYPE",
+             "QTY_CASES", "QTY_PALLETS", "NEED_DATE", "SMOOTHED_DATE", "SHIFT_DAYS", "MOVE_REASON"]
+if "DC_ID" in plan.columns and "SMOOTHED_DC" in plan.columns:
+    base_cols = ["ORDER_ID", "SKU_ID", "DEST_LOC", "DC_ID", "SMOOTHED_DC", "PRIORITY",
+                 "RESOURCE_TYPE", "QTY_CASES", "QTY_PALLETS", "NEED_DATE", "SMOOTHED_DATE",
+                 "SHIFT_DAYS", "MOVE_REASON"]
+display_cols = [c for c in base_cols if c in display_df.columns]
 display_df = display_df[display_cols].sort_values("SMOOTHED_DATE")
 
 

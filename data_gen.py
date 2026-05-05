@@ -25,6 +25,12 @@ START_DATE = date(2026, 3, 1)
 RESOURCES = ["Conveyable", "NonConveyable", "Bulk"]
 CATEGORIES = ["Grocery", "Health & Beauty", "Dairy", "Frozen", "Household"]
 
+# Two DCs with different capacity profiles: DC002 ~70% of DC001's throughput
+DC_CONFIGS = {
+    "DC001": {"Conveyable": 220, "NonConveyable": 120, "Bulk": 180},
+    "DC002": {"Conveyable": 150, "NonConveyable": 90, "Bulk": 130},
+}
+
 # Stores deliberately skewed: 5 stores on Mon/Wed/Fri, 3 on Tue/Thu
 STORE_DELIVERY_CALENDARS = {
     "STORE001": "Mon,Wed,Fri",
@@ -91,25 +97,23 @@ def build_store_master() -> pd.DataFrame:
 
 
 def build_dc_capacity(np_rng: np.random.Generator) -> pd.DataFrame:
-    """Daily capacity ceiling per resource type for 30 operating days."""
+    """Daily capacity ceiling per resource type for 30 operating days, across all DCs."""
     rows = []
-    # Tighter caps to simulate a realistic DC at ~75-85% utilisation on average
-    base_caps = {"Conveyable": 220, "NonConveyable": 120, "Bulk": 180}  # pallets/day
-    for d in date_range(N_DAYS):
-        for resource, base in base_caps.items():
-            # No capacity on Sundays; slightly lower on Saturdays
-            if weekday_name(d) == "Sun":
-                cap = 0
-            elif weekday_name(d) == "Sat":
-                cap = int(base * 0.6)
-            else:
-                cap = int(base * float(np_rng.uniform(0.92, 1.08)))
-            rows.append({
-                "DC_ID": "DC001",
-                "RESOURCE_ID": resource,
-                "MAX_THRU": cap,
-                "OP_DATE": d.isoformat(),
-            })
+    for dc_id, base_caps in DC_CONFIGS.items():
+        for d in date_range(N_DAYS):
+            for resource, base in base_caps.items():
+                if weekday_name(d) == "Sun":
+                    cap = 0
+                elif weekday_name(d) == "Sat":
+                    cap = int(base * 0.6)
+                else:
+                    cap = int(base * float(np_rng.uniform(0.92, 1.08)))
+                rows.append({
+                    "DC_ID": dc_id,
+                    "RESOURCE_ID": resource,
+                    "MAX_THRU": cap,
+                    "OP_DATE": d.isoformat(),
+                })
     return pd.DataFrame(rows)
 
 
@@ -172,6 +176,8 @@ def build_demand(
 
                 priority = "HARD" if rng.random() < 0.20 else "SOFT"
                 qty_cases = int(np_rng.integers(5, 60))
+                # 90% of orders fulfilled from DC001; 10% from DC002
+                dc_id = "DC002" if rng.random() < 0.10 else "DC001"
 
                 rows.append({
                     "ORDER_ID": f"ORD{order_id:05d}",
@@ -181,6 +187,7 @@ def build_demand(
                     "PRIORITY": priority,
                     "QTY_CASES": qty_cases,
                     "RESOURCE_TYPE": sku["RESOURCE_TYPE"],
+                    "DC_ID": dc_id,
                 })
                 order_id += 1
 
@@ -213,7 +220,7 @@ def generate(seed: int = SEED, db_path: str = DB_PATH) -> None:
     print(f"✅ Generated {len(demand):,} demand order lines across {N_SKUS} SKUs and {N_STORES} stores.")
     print(f"   SKU Master:    {len(sku_master)} rows")
     print(f"   Store Master:  {len(store_master)} rows")
-    print(f"   DC Capacity:   {len(dc_capacity)} rows ({N_DAYS} days × {len(RESOURCES)} resources)")
+    print(f"   DC Capacity:   {len(dc_capacity)} rows ({len(DC_CONFIGS)} DCs × {N_DAYS} days × {len(RESOURCES)} resources)")
     print(f"   Inventory:     {len(inventory)} rows")
     print(f"   Demand:        {len(demand):,} rows  (HARD: {(demand['PRIORITY']=='HARD').sum()}, SOFT: {(demand['PRIORITY']=='SOFT').sum()})")
     print(f"💾 Saved to {db_path}")
