@@ -63,7 +63,7 @@ Before launching the dashboard, you can verify that all backend logic is working
 pytest test_backend.py -v
 ```
 
-You should see **34 tests pass**. These cover the solver guardrails, unit conversion math, data loader validation, and edge-case handling. If any tests fail, check that all dependencies in `requirements.txt` were installed correctly.
+You should see **57 tests pass**. These cover the solver guardrails, unit conversion math, data loader validation, guardrail boundary conditions, multi-DC rerouting, and edge-case handling. If any tests fail, check that all dependencies in `requirements.txt` were installed correctly.
 
 ---
 

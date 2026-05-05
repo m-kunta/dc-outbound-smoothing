@@ -273,14 +273,15 @@ API keys can be set in `.env` or pasted live in the sidebar (stored in `st.sessi
 
 ## Testing (test_backend.py)
 
-**38 tests across 5 categories.** All must pass after any change.
+**57 tests across 5 categories.** All must pass after any change.
 
 | Prefix | Category | Count |
 |---|---|---|
-| `test_dg_*` | Data generation integrity | 6 |
-| `test_sv_*` | Solver math, guardrails, and multi-DC | 25 |
-| `test_dl_*` | Data loader validation | 7 |
-| `test_ec_*` | Edge case handling | 2 |
+| `test_dg_*` | Data generation integrity | 9 |
+| `test_sv_*` | Solver math, guardrails, multi-DC, KPI math | 26 |
+| `test_guardrail_*` | Guardrail boundary conditions (exact-equality edge cases) | 5 |
+| `test_dl_*` | Data loader validation and export | 12 |
+| `test_ec_*` | Edge case and negative testing | 5 |
 
 **Key test patterns:**
 
@@ -320,6 +321,10 @@ kpis = result["kpis"]
 6. **`lru_cache` on `_get_weekday`.** Cache is unbounded — if dates span > a year, clear with `_get_weekday.cache_clear()` (not an issue in current 30-day horizon).
 
 7. **Exception scoring in `app.py`.** The impact score formula is in `app.py` (not `solver.py`) and is purely for UI ranking — it does not affect the solver output. Don't move it to `solver.py`.
+
+8. **OSA when no HARD orders exist.** `compute_kpis()` returns `osa_pct = 100.0` when `hard_after` is empty. This is intentional — the test `test_ec_04` revealed that `pd.Series([]).mean()` returns `NaN`, which propagated to the KPI dict and the dashboard. The fix treats "no HARD orders" as vacuously 100% on-time.
+
+9. **`UOM_CONV = 0` is not guarded.** If a SKU has `UOM_CONV = 0`, `convert_units()` produces `inf` pallets via numpy division. No validation exists in the current solver — this is a known gap. Validate `UOM_CONV > 0` in `data_loader.py` before writing real data to the DB.
 
 ---
 

@@ -370,8 +370,8 @@ dc_outbound_smoothing/
 | # | Feature | Status |
 |---|---|---|
 | 1 | What-If Scenario Comparison | ✅ Done |
-| 2 | Multi-DC support — route across DCs when one is over capacity | 🔜 Planned |
-| 3 | Expanded test coverage — close P1/P2 gap from TEST_PLAN.md | 🔜 Planned |
+| 2 | Multi-DC support — route across DCs when one is over capacity | ✅ Done |
+| 3 | Expanded test coverage — close P1/P2 gap from TEST_PLAN.md | ✅ Done |
 | 4 | REST API wrapper (FastAPI) to expose `solve()` programmatically | 🔜 Planned |
 | 5 | LP benchmark (PuLP/OR-Tools) to quantify optimality gap vs. greedy | 🔜 Planned |
 
@@ -381,7 +381,7 @@ dc_outbound_smoothing/
 
 **The LevelSet prototype is fully complete and operational.**
 
-The backend solver, synthetic data generation, and multi-provider AI integrations have been thoroughly tested (`test_backend.py`). All mathematical guardrails (capacity, shelf-life, backroom space, inventory tracking) perform as designed, effectively smoothing outbound CV by ~20% without violating constraints. The Streamlit frontend and UI workflows have been validated.
+The backend solver, synthetic data generation, and multi-provider AI integrations have been thoroughly tested (`test_backend.py` — **57 tests, all passing**). All mathematical guardrails (capacity, shelf-life, backroom space, inventory tracking) perform as designed, effectively smoothing outbound CV by ~20% without violating constraints. Multi-DC routing, guardrail boundary conditions, and edge cases are covered. The Streamlit frontend and UI workflows have been validated.
 
 ---
 

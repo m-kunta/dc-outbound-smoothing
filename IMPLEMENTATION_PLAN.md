@@ -288,13 +288,41 @@ Each phase is self-contained and testable before moving to the next.
 
 ---
 
+## Phase 8 — Expanded Test Coverage ✅
+
+**Goal:** Close the gap between the formal TEST_PLAN.md and the automated suite; surface and fix any bugs uncovered in the process.
+
+**Files changed:** `test_backend.py`, `solver.py`
+
+**Test count:** 38 → 57 tests (all passing).
+
+**Bug found and fixed:**
+- `compute_kpis()` returned `NaN` for `osa_pct` when the plan contains no HARD orders — `mean()` of an empty boolean Series. Fixed to return `100.0` (vacuously true).
+
+**New test groups added:**
+
+| Group | Tests | What they cover |
+|---|---|---|
+| `test_guardrail_*` | 5 | Boundary conditions: `is_frozen` exact-equality, `inventory_ok` on exact on-hand match and exact ASN-day match, `shelf_life_ok` exact limit and `shelf_life < 4` fallback |
+| KPI math | 2 | CV formula verified against manual `std/mean` calculation; OSA = 0% when HARD orders are scheduled late |
+| Edge cases | 3 | All-SOFT demand (exposes OSA NaN bug), zero DC capacity → all alerts, all orders same NEED_DATE |
+| Solver params | 1 | Larger frozen zone reduces movable orders (SV-23) |
+| Multi-DC | 2 | Cross-DC reroute fires end-to-end when primary DC has zero capacity (first test of Phase 2 code path); backward-compat for legacy DBs without `DC_ID` |
+| Data gen integrity | 3 | All 3 resource types in demand, `dc_capacity` row count (180 = 2 DCs × 30 days × 3 resources), delayed ASNs present |
+| Data loader | 3 | Extra columns preserved, empty CSV (0 rows) accepted, template CSV has exactly 1 sample row per table |
+
+**Known remaining gap (not fixed, documented):**
+- `UOM_CONV = 0` in SKU master produces `inf` pallets via numpy division — no guard exists in `convert_units()`. Validate at the data upload boundary in `data_loader.py` to prevent real-data issues.
+
+---
+
 ## Roadmap
 
 | # | Feature | Status |
 |---|---|---|
 | 1 | What-If Scenario Comparison | ✅ Done |
 | 2 | Multi-DC support | ✅ Done |
-| 3 | Expanded test coverage (P1/P2) | 🔜 Planned |
+| 3 | Expanded test coverage (P1/P2) | ✅ Done |
 | 4 | REST API wrapper (FastAPI) | 🔜 Planned |
 | 5 | LP benchmark (PuLP/OR-Tools) | 🔜 Planned |
 
