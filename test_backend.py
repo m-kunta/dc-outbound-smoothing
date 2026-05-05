@@ -7,6 +7,7 @@ import os
 from data_gen import generate
 from solver import solve, smooth, get_runtime_config, convert_units
 from data_loader import (
+    TABLE_SCHEMAS,
     validate,
     apply_defaults,
     normalise_columns,
@@ -628,3 +629,262 @@ def test_sv_32_n_rerouted_in_kpis():
     result = solve(db_path=DB_PATH)
     assert "n_rerouted" in result["kpis"]
     assert result["kpis"]["n_rerouted"] >= 0
+
+
+# ── Guardrail boundary-condition tests ────────────────────────────────────────
+
+def test_guardrail_is_frozen_exact_boundary():
+    """Date exactly equal to frozen_date must be treated as frozen (≤ check)."""
+    from solver import is_frozen
+    today = date.today()
+    frozen_dt = today + timedelta(days=2)
+    assert is_frozen(frozen_dt.isoformat(), frozen_dt) is True
+    assert is_frozen((frozen_dt + timedelta(days=1)).isoformat(), frozen_dt) is False
+
+
+def test_guardrail_inventory_ok_exact_on_hand_match():
+    """on_hand exactly equal to qty_cases should be allowed (>= check)."""
+    from solver import inventory_ok
+    assert inventory_ok("SKU1", _future_date(5), 10.0, {"SKU1": _future_date(20)}, {"SKU1": 10}) is True
+
+
+def test_guardrail_inventory_ok_asn_exact_day_match():
+    """ASN arriving on the ship date itself should be allowed (>= check)."""
+    from solver import inventory_ok
+    ship = _future_date(5)
+    assert inventory_ok("SKU1", ship, 50.0, {"SKU1": ship}, {"SKU1": 0}) is True
+
+
+def test_guardrail_shelf_life_ok_very_short_shelf():
+    """shelf_life < 4: max(shelf_life // 4, 1) = 1, so only 1 day pull-forward allowed."""
+    from solver import shelf_life_ok
+    need = _future_date(10)
+    one_day_early = _future_date(9)
+    two_days_early = _future_date(8)
+    # Exactly 1 day early — at the boundary, must be OK
+    assert shelf_life_ok(one_day_early, need, shelf_life_days=3) is True
+    # 2 days early — exceeds max(3//4, 1)=1, must be blocked
+    assert shelf_life_ok(two_days_early, need, shelf_life_days=3) is False
+
+
+def test_guardrail_shelf_life_ok_exact_boundary():
+    """Pull-forward exactly at the allowed limit should pass; one day more should fail."""
+    from solver import shelf_life_ok
+    need = _future_date(20)
+    # shelf_life=40 → max(40//4,1)=10 days allowed
+    allowed = _future_date(10)   # 10 days early — at boundary
+    blocked  = _future_date(9)   # 11 days early — one over
+    assert shelf_life_ok(allowed, need, shelf_life_days=40) is True
+    assert shelf_life_ok(blocked, need, shelf_life_days=40) is False
+
+
+# ── KPI math verification ─────────────────────────────────────────────────────
+
+def test_sv_36_cv_formula_correctness():
+    """compute_kpis CV should equal std/mean on the daily pallet series."""
+    from solver import compute_kpis
+    # Craft a plan with known daily volumes: day A=10, day B=30 → mean=20, std≈14.14, CV≈0.707
+    day_a = _future_date(5)
+    day_b = _future_date(6)
+    demand = pd.DataFrame([
+        {"ORDER_ID": "O1", "NEED_DATE": day_a, "QTY_PALLETS": 10, "PRIORITY": "SOFT", "RESOURCE_TYPE": "Bulk"},
+        {"ORDER_ID": "O2", "NEED_DATE": day_b, "QTY_PALLETS": 30, "PRIORITY": "SOFT", "RESOURCE_TYPE": "Bulk"},
+    ])
+    plan = demand.copy()
+    plan["SMOOTHED_DATE"] = plan["NEED_DATE"]
+    plan["SHIFT_DAYS"] = 0
+    plan["MOVE_REASON"] = "No change needed"
+    dc_cap = {(day_a, "Bulk"): 500, (day_b, "Bulk"): 500}
+    kpis = compute_kpis(demand, plan, dc_cap)
+
+    vols = pd.Series([10.0, 30.0])
+    expected_cv = vols.std() / vols.mean()
+    assert abs(kpis["cv_before"] - expected_cv) < 0.001
+
+
+def test_sv_37_osa_zero_when_hard_orders_late():
+    """OSA must be 0% when all HARD orders are scheduled after their need date."""
+    from solver import compute_kpis
+    day_need = _future_date(5)
+    day_late  = _future_date(6)   # 1 day after need_date
+    demand = pd.DataFrame([
+        {"ORDER_ID": "O1", "NEED_DATE": day_need, "QTY_PALLETS": 5, "PRIORITY": "HARD", "RESOURCE_TYPE": "Bulk"},
+    ])
+    plan = demand.copy()
+    plan["SMOOTHED_DATE"] = day_late   # late!
+    plan["SHIFT_DAYS"] = -1
+    plan["MOVE_REASON"] = "Locked (HARD priority)"
+    kpis = compute_kpis(demand, plan, {})
+    assert kpis["osa_pct"] == 0.0
+
+
+# ── Edge case integration tests ────────────────────────────────────────────────
+
+def test_ec_04_all_soft_orders(tmp_path):
+    """Solver runs cleanly when all demand is SOFT (no HARD orders)."""
+    db = str(tmp_path / "all_soft.db")
+    generate(seed=42, db_path=db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE demand SET PRIORITY = 'SOFT'")
+    result = solve(db_path=db)
+    plan = result["plan"]
+    assert len(plan[plan["PRIORITY"] == "HARD"]) == 0
+    assert result["kpis"]["osa_pct"] == 100.0   # no HARD orders → perfect OSA
+
+
+def test_ec_05_zero_dc_capacity_all_alerts(tmp_path):
+    """When all DC capacity is 0, every SOFT order becomes a capacity alert."""
+    db = str(tmp_path / "zero_cap.db")
+    generate(seed=42, db_path=db)
+    with sqlite3.connect(db) as conn:
+        # Synthetic data uses past dates; move all need_dates into the future
+        # so orders are outside the frozen zone and smoothing is actually attempted
+        conn.execute(f"UPDATE demand SET NEED_DATE = '{_future_date(15)}'")
+        conn.execute("UPDATE dc_capacity SET MAX_THRU = 0")
+    result = solve(db_path=db, frozen_hours=24)
+    kpis = result["kpis"]
+    assert kpis["n_alerts"] == kpis["n_soft"]
+    assert kpis["n_moved"] == 0
+
+
+def test_ec_09_all_orders_same_date(tmp_path):
+    """Max spike: all SOFT orders share one NEED_DATE. Solver must not crash."""
+    db = str(tmp_path / "single_date.db")
+    generate(seed=42, db_path=db)
+    with sqlite3.connect(db) as conn:
+        spike_date = (date.today() + timedelta(days=15)).isoformat()
+        conn.execute(f"UPDATE demand SET NEED_DATE = '{spike_date}'")
+    result = solve(db_path=db, frozen_hours=24, horizon_days=10)
+    assert not result["plan"].empty
+    assert result["kpis"]["n_orders_total"] > 0
+
+
+def test_sv_23_larger_frozen_zone_reduces_movable_orders():
+    """Increasing FROZEN_HOURS should lock more orders (fewer moved or equal)."""
+    result_narrow = solve(db_path=DB_PATH, frozen_hours=24, horizon_days=10)
+    result_wide   = solve(db_path=DB_PATH, frozen_hours=96, horizon_days=10)
+    # A wider frozen zone can only reduce or hold the moved count, never increase it
+    assert result_wide["kpis"]["n_moved"] <= result_narrow["kpis"]["n_moved"]
+
+
+def test_sv_34_backward_compat_no_dc_id_column(tmp_path):
+    """solve() must handle a legacy DB where demand/dc_capacity have no DC_ID column."""
+    db = str(tmp_path / "legacy.db")
+    generate(seed=42, db_path=db)
+    with sqlite3.connect(db) as conn:
+        # Drop DC_ID from both tables to simulate pre-multi-DC database
+        conn.execute("CREATE TABLE demand_legacy AS SELECT ORDER_ID,SKU_ID,DEST_LOC,NEED_DATE,PRIORITY,QTY_CASES,RESOURCE_TYPE FROM demand")
+        conn.execute("DROP TABLE demand")
+        conn.execute("ALTER TABLE demand_legacy RENAME TO demand")
+        conn.execute("CREATE TABLE dc_cap_legacy AS SELECT RESOURCE_ID,MAX_THRU,OP_DATE FROM dc_capacity WHERE DC_ID='DC001'")
+        conn.execute("DROP TABLE dc_capacity")
+        conn.execute("ALTER TABLE dc_cap_legacy RENAME TO dc_capacity")
+    result = solve(db_path=db)
+    assert not result["plan"].empty
+    assert "SMOOTHED_DC" in result["plan"].columns
+
+
+# ── Cross-DC reroute integration test ─────────────────────────────────────────
+
+def test_sv_33_cross_dc_reroute_fires_when_primary_at_capacity(tmp_path):
+    """
+    Phase 2 rerouting: a SOFT order assigned to DC001 (zero capacity everywhere)
+    must be rerouted to DC002 (ample capacity) after Phase 1 raises a capacity alert.
+    """
+    db = str(tmp_path / "reroute.db")
+    target_date = _future_date(10)
+    dates = [_future_date(d) for d in range(2, 15)]
+
+    sku = pd.DataFrame([{
+        "SKU_ID": "SKU1", "CATEGORY": "Grocery", "RESOURCE_TYPE": "Bulk",
+        "SHELF_LIFE": 30, "CASE_CUBE": 1.0, "UOM_CONV": 10.0,
+    }])
+    store = pd.DataFrame([{
+        "STORE_ID": "STORE1", "BACKROOM_CAP": 999,
+        "DELIVERY_CALENDAR": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+    }])
+    inv = pd.DataFrame([{"SKU_ID": "SKU1", "ON_HAND_AVAIL": 9999, "ASN_ETA": _future_date(1)}])
+    cap_rows = []
+    for d in dates:
+        cap_rows.append({"DC_ID": "DC001", "RESOURCE_ID": "Bulk", "MAX_THRU": 0,   "OP_DATE": d})
+        cap_rows.append({"DC_ID": "DC002", "RESOURCE_ID": "Bulk", "MAX_THRU": 500, "OP_DATE": d})
+    dc_cap = pd.DataFrame(cap_rows)
+    demand = pd.DataFrame([{
+        "ORDER_ID": "ORD001", "SKU_ID": "SKU1", "DEST_LOC": "STORE1",
+        "NEED_DATE": target_date, "PRIORITY": "SOFT",
+        "QTY_CASES": 10, "RESOURCE_TYPE": "Bulk", "DC_ID": "DC001",
+    }])
+
+    with sqlite3.connect(db) as conn:
+        sku.to_sql("sku_master", conn, if_exists="replace", index=False)
+        store.to_sql("store_master", conn, if_exists="replace", index=False)
+        inv.to_sql("inventory", conn, if_exists="replace", index=False)
+        dc_cap.to_sql("dc_capacity", conn, if_exists="replace", index=False)
+        demand.to_sql("demand", conn, if_exists="replace", index=False)
+
+    result = solve(db_path=db, frozen_hours=24, horizon_days=10)
+    kpis = result["kpis"]
+    plan  = result["plan"]
+
+    assert kpis["n_rerouted"] == 1, "Expected exactly 1 cross-DC reroute"
+    rerouted = plan[plan["MOVE_REASON"].str.startswith("Cross-DC")]
+    assert len(rerouted) == 1
+    assert rerouted.iloc[0]["SMOOTHED_DC"] == "DC002"
+    assert rerouted.iloc[0]["DC_ID"] == "DC001"
+
+
+# ── Data generation integrity tests ───────────────────────────────────────────
+
+def test_dg_07_all_three_resource_types_in_demand():
+    with sqlite3.connect(DB_PATH) as conn:
+        resources = pd.read_sql("SELECT DISTINCT RESOURCE_TYPE FROM demand", conn)["RESOURCE_TYPE"].tolist()
+    assert set(resources) == {"Conveyable", "NonConveyable", "Bulk"}
+
+
+def test_dg_08_dc_capacity_row_count():
+    """2 DCs × 30 days × 3 resources = 180 rows."""
+    with sqlite3.connect(DB_PATH) as conn:
+        n = pd.read_sql("SELECT COUNT(*) AS n FROM dc_capacity", conn)["n"].iloc[0]
+    assert n == 180
+
+
+def test_dg_09_delayed_asns_exist():
+    """At least some SKUs (≈15%) should have ASN arriving after day 5."""
+    from data_gen import START_DATE
+    threshold = (START_DATE + timedelta(days=5)).isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+        delayed = pd.read_sql(
+            f"SELECT COUNT(*) AS n FROM inventory WHERE ASN_ETA > '{threshold}'", conn
+        )["n"].iloc[0]
+    assert delayed >= 1, "Expected at least 1 SKU with delayed ASN"
+
+
+# ── Data loader gap tests ──────────────────────────────────────────────────────
+
+def test_dl_05_extra_columns_preserved():
+    """Columns beyond the schema should be kept in the returned DataFrame."""
+    csv_bytes = (
+        "order_id,sku_id,dest_loc,need_date,qty_cases,resource_type,custom_flag\n"
+        "ORD1,SKU1,STORE1,2026-03-05,12,Bulk,YES\n"
+    ).encode("utf-8")
+    df, errors = load_csv("demand", csv_bytes)
+    assert errors == []
+    assert "CUSTOM_FLAG" in df.columns
+    assert df.iloc[0]["CUSTOM_FLAG"] == "YES"
+
+
+def test_dl_07_empty_csv_accepted():
+    """A CSV with headers only (0 data rows) should be accepted and return empty DataFrame."""
+    csv_bytes = "order_id,sku_id,dest_loc,need_date,qty_cases,resource_type\n".encode("utf-8")
+    df, errors = load_csv("demand", csv_bytes)
+    assert errors == []
+    assert df is not None
+    assert len(df) == 0
+
+
+def test_dl_11_template_has_exactly_one_sample_row():
+    """get_sample_csv should return a CSV with exactly 1 data row for each table."""
+    for table in TABLE_SCHEMAS:
+        csv_text = get_sample_csv(table)
+        df = pd.read_csv(pd.io.common.StringIO(csv_text))
+        assert len(df) == 1, f"Expected 1 sample row for {table}, got {len(df)}"

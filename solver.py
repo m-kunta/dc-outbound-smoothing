@@ -334,9 +334,13 @@ def compute_kpis(
         return float(series.std() / series.mean()) if series.mean() > 0 else 0.0
 
     hard_after = plan_after[plan_after["PRIORITY"] == "HARD"]
-    osa_pct = float(
-        (hard_after["SMOOTHED_DATE"] <= hard_after["NEED_DATE"]).mean() * 100
-    )
+    # When there are no HARD orders, OSA is vacuously 100% (nothing to miss)
+    if hard_after.empty:
+        osa_pct = 100.0
+    else:
+        osa_pct = float(
+            (hard_after["SMOOTHED_DATE"] <= hard_after["NEED_DATE"]).mean() * 100
+        )
 
     soft_after = plan_after[plan_after["PRIORITY"] == "SOFT"]
     n_moved  = (soft_after["SHIFT_DAYS"] > 0).sum()
