@@ -626,6 +626,119 @@ else:
 
 
 
+# ── What-If Scenario Comparison ───────────────────────────────────────────────
+st.markdown("---")
+st.subheader("🔬 What-If Scenario Comparison")
+st.caption(
+    "Run two solver configurations side-by-side and compare their KPIs and outbound volume profiles."
+)
+
+with st.expander("Configure & Run Comparison", expanded=False):
+    wa_col, wb_col = st.columns(2)
+
+    with wa_col:
+        st.markdown("**Scenario A** *(baseline)*")
+        wa_horizon  = st.number_input("Horizon (days)", min_value=5, max_value=14,
+                                      value=horizon, step=1, key="wa_horizon")
+        wa_frozen   = st.number_input("Frozen Zone (hours)", min_value=24, max_value=96,
+                                      value=frozen_hours, step=24, key="wa_frozen")
+        wa_lambda   = st.number_input("λ OSA Penalty", min_value=1, max_value=500,
+                                      value=lambda_val, step=10, key="wa_lambda")
+        wa_gamma    = st.number_input("γ Early Ship Penalty", min_value=0, max_value=20,
+                                      value=gamma_val, step=1, key="wa_gamma")
+
+    with wb_col:
+        st.markdown("**Scenario B** *(alternative)*")
+        wb_horizon  = st.number_input("Horizon (days)", min_value=5, max_value=14,
+                                      value=min(horizon + 2, 14), step=1, key="wb_horizon")
+        wb_frozen   = st.number_input("Frozen Zone (hours)", min_value=24, max_value=96,
+                                      value=frozen_hours, step=24, key="wb_frozen")
+        wb_lambda   = st.number_input("λ OSA Penalty", min_value=1, max_value=500,
+                                      value=max(lambda_val - 50, 1), step=10, key="wb_lambda")
+        wb_gamma    = st.number_input("γ Early Ship Penalty", min_value=0, max_value=20,
+                                      value=min(gamma_val + 3, 20), step=1, key="wb_gamma")
+
+    if st.button("▶️ Run Scenario Comparison", type="primary", use_container_width=True):
+        with st.spinner("Running Scenario A…"):
+            res_a = solve(DB_PATH, horizon_days=wa_horizon, frozen_hours=wa_frozen,
+                          lambda_val=wa_lambda, gamma_val=wa_gamma)
+        with st.spinner("Running Scenario B…"):
+            res_b = solve(DB_PATH, horizon_days=wb_horizon, frozen_hours=wb_frozen,
+                          lambda_val=wb_lambda, gamma_val=wb_gamma)
+        st.session_state["whatif_a"] = res_a
+        st.session_state["whatif_b"] = res_b
+        st.session_state["whatif_labels"] = (
+            f"A (H={wa_horizon}d λ={wa_lambda} γ={wa_gamma})",
+            f"B (H={wb_horizon}d λ={wb_lambda} γ={wb_gamma})",
+        )
+        st.success("✅ Comparison complete!")
+
+if "whatif_a" in st.session_state and "whatif_b" in st.session_state:
+    ka = st.session_state["whatif_a"]["kpis"]
+    kb = st.session_state["whatif_b"]["kpis"]
+    pa = st.session_state["whatif_a"]["plan"]
+    pb = st.session_state["whatif_b"]["plan"]
+    label_a, label_b = st.session_state["whatif_labels"]
+
+    # KPI comparison table
+    st.markdown("#### KPI Comparison")
+    kpi_rows = [
+        ("Outbound CV (after)",   f"{ka['cv_after']:.3f}",          f"{kb['cv_after']:.3f}",
+         f"{kb['cv_after'] - ka['cv_after']:+.3f}",   "inverse"),
+        ("OSA — HARD Orders",     f"{ka['osa_pct']:.1f}%",           f"{kb['osa_pct']:.1f}%",
+         f"{kb['osa_pct'] - ka['osa_pct']:+.1f}%",    "normal"),
+        ("Orders Shifted",        str(ka["n_moved"]),                str(kb["n_moved"]),
+         f"{kb['n_moved'] - ka['n_moved']:+d}",        "normal"),
+        ("Capacity Alerts",       str(ka["n_alerts"]),               str(kb["n_alerts"]),
+         f"{kb['n_alerts'] - ka['n_alerts']:+d}",      "inverse"),
+        ("Cube Util (after)",     f"{ka['cube_util_after']:.1f}%",   f"{kb['cube_util_after']:.1f}%",
+         f"{kb['cube_util_after'] - ka['cube_util_after']:+.1f}%",  "normal"),
+    ]
+    kpi_cols = st.columns(len(kpi_rows))
+    for col, (label, val_a, val_b, delta, dc) in zip(kpi_cols, kpi_rows):
+        col.metric(
+            label,
+            f"A: {val_a}  B: {val_b}",
+            delta=f"B vs A: {delta}",
+            delta_color=dc,
+        )
+
+    # Overlay chart — both smoothed plans
+    st.markdown("#### Smoothed Volume — Scenario A vs B")
+    agg_a = (
+        pa.groupby("SMOOTHED_DATE")["QTY_PALLETS"].sum()
+        .reset_index().rename(columns={"SMOOTHED_DATE": "Date", "QTY_PALLETS": "Pallets"})
+    )
+    agg_a["Scenario"] = label_a
+
+    agg_b = (
+        pb.groupby("SMOOTHED_DATE")["QTY_PALLETS"].sum()
+        .reset_index().rename(columns={"SMOOTHED_DATE": "Date", "QTY_PALLETS": "Pallets"})
+    )
+    agg_b["Scenario"] = label_b
+
+    cmp_df = pd.concat([agg_a, agg_b])
+    cmp_chart = (
+        alt.Chart(cmp_df)
+        .mark_bar(opacity=0.8)
+        .encode(
+            x=alt.X("Date:T", title="Operating Date", axis=alt.Axis(format="%b %d")),
+            y=alt.Y("Pallets:Q", title="Total Pallets"),
+            color=alt.Color(
+                "Scenario:N",
+                scale=alt.Scale(
+                    domain=[label_a, label_b],
+                    range=["#3b82f6", "#f59e0b"],
+                ),
+                legend=alt.Legend(title="Scenario"),
+            ),
+            xOffset="Scenario:N",
+            tooltip=["Date:T", "Scenario:N", alt.Tooltip("Pallets:Q", format=".0f")],
+        )
+        .properties(height=320)
+    )
+    st.altair_chart(cmp_chart, use_container_width=True)
+
 # ── Export Panel ──────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("⬇️ Export Results")
