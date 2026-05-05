@@ -234,5 +234,37 @@ Each phase is self-contained and testable before moving to the next.
 
 ---
 
+## Phase 6 — What-If Scenario Comparison ✅
+
+**Goal:** Let planners run two solver configurations side-by-side without leaving the dashboard.
+
+**File:** `app.py` (lines 629–742)
+
+**Implementation:**
+- Collapsible expander with two columns of param inputs — Scenario A (pre-filled from the current sidebar), Scenario B (configurable alternative)
+- Single "▶️ Run Scenario Comparison" button that calls `solve()` twice with independent configs
+- Results cached in `st.session_state["whatif_a"]` / `["whatif_b"]` separately from the main result
+- KPI comparison row: 5 `st.metric()` cards showing `A: X  B: Y` with `B vs A: Δ` delta, `delta_color` set appropriately per metric (inverse for CV and Alerts, normal for OSA/Shifted/Cube)
+- Overlay Altair bar chart — blue = Scenario A, amber = Scenario B, `xOffset="Scenario:N"` for grouped rendering
+
+**Design decisions:**
+- Scenario B defaults are set to a meaningfully different config (horizon +2, λ −50, γ +3) so the feature is immediately explorable without manual input
+- `solve()` writes to `smoothed_plan` in SQLite on each call — the what-if runs do overwrite it, but the main `session_state["result"]` is unaffected because it was cached before the comparison ran
+- No new backend code required — reuses `solve()` directly with explicit kwargs
+
+---
+
+## Roadmap
+
+| # | Feature | Status |
+|---|---|---|
+| 1 | What-If Scenario Comparison | ✅ Done |
+| 2 | Multi-DC support | 🔜 Planned |
+| 3 | Expanded test coverage (P1/P2) | 🔜 Planned |
+| 4 | REST API wrapper (FastAPI) | 🔜 Planned |
+| 5 | LP benchmark (PuLP/OR-Tools) | 🔜 Planned |
+
+---
+
 *Mohith Kunta — Supply Chain & AI Portfolio*  
 *[github.com/m-kunta](https://github.com/m-kunta)*

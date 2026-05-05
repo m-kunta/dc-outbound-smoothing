@@ -168,8 +168,9 @@ Z = Σ(V_t − μ_H)² + λ·(OSA_Penalty) + γ·(EarlyShipPenalty)
 | Schedule table | 390–424 | Filtered, color-coded DataFrame (green=moved, red=alert) |
 | AI Planner Insight | 428–451 | `get_llm_response()` with structured KPI prompt |
 | Exception Review | 454–611 | 3 exception types classified, ranked by impact score, AI triage |
-| Export panel | 617–651 | CSV, JSON plan + KPI downloads |
-| Footer | 654–665 | Author credits |
+| What-If Comparison | 629–742 | Two-config solver comparison: param inputs, KPI delta row, overlay chart |
+| Export panel | 745–778 | CSV, JSON plan + KPI downloads |
+| Footer | 780–791 | Author credits |
 
 ### Exception Types (app.py lines 466–537)
 

@@ -239,6 +239,20 @@ See [REQUIREMENTS.md](REQUIREMENTS.md) for data feed specifications and KPI targ
 - **Smoothed Ship Schedule** — Filterable table with colour-coded rows (green = moved, red = alert)
 - **Reset Synthetic Data** — Regenerate the database and re-run the solver in one click
 
+### 🔬 What-If Scenario Comparison
+
+Run two solver configurations side-by-side without leaving the dashboard. Useful for answering operational questions like *"If I widen the horizon from 10 to 14 days, how many more orders get shifted — and does OSA suffer?"*
+
+**How to use:**
+1. Scroll to the **🔬 What-If Scenario Comparison** section
+2. Expand **Configure & Run Comparison**
+3. Set Scenario A (pre-filled from the current sidebar values) and Scenario B (your alternative)
+4. Click **▶️ Run Scenario Comparison**
+
+**What you get:**
+- **KPI Comparison row** — CV, OSA, orders shifted, alerts, and cube utilisation for both scenarios with a B-vs-A delta
+- **Overlay volume chart** — Both smoothed plans on the same chart (blue = A, amber = B) so you can see exactly where the two configs diverge
+
 ### 📁 Real Data Upload & Export
 
 To test LevelSet with your own network volume rather than the synthetic generator:
@@ -348,6 +362,18 @@ dc_outbound_smoothing/
 ├── REQUIREMENTS.md     # Full BRD: solver logic, data specs, objective function
 └── README.md           # This file
 ```
+
+---
+
+## Roadmap
+
+| # | Feature | Status |
+|---|---|---|
+| 1 | What-If Scenario Comparison | ✅ Done |
+| 2 | Multi-DC support — route across DCs when one is over capacity | 🔜 Planned |
+| 3 | Expanded test coverage — close P1/P2 gap from TEST_PLAN.md | 🔜 Planned |
+| 4 | REST API wrapper (FastAPI) to expose `solve()` programmatically | 🔜 Planned |
+| 5 | LP benchmark (PuLP/OR-Tools) to quantify optimality gap vs. greedy | 🔜 Planned |
 
 ---
 

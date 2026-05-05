@@ -96,7 +96,17 @@ Use the sidebar on the left to change how the solver behaves:
 
 *Tip: After making a change, click the **▶️ Run Smoothing Solver** button to re-run the engine and see the new results.*
 
-### 3) Review Exceptions & AI Triage
+### 3) Run a What-If Scenario Comparison
+
+Scroll down to the **🔬 What-If Scenario Comparison** section and expand **Configure & Run Comparison**.
+
+- **Scenario A** pre-fills from the current sidebar parameters (your baseline).
+- **Scenario B** defaults to a slightly different configuration — widen the horizon, lower λ, or raise γ to see how the solver responds.
+- Click **▶️ Run Scenario Comparison** to run both configs and see a side-by-side KPI table plus an overlay volume chart.
+
+*Tip: This is the fastest way to answer "what if I gave the solver two more days?" without touching the main plan.*
+
+### 4) Review Exceptions & AI Triage
 
 Scroll down to the **Exception Review** section. Here you will find any "Capacity Alerts" (orders that could not be smoothed) or days that are still over capacity.
 - If you entered an AI API key, click **🔍 Triage Exceptions with AI** to get a structured priority list of what needs immediate attention versus what just needs to be monitored.
